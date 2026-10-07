@@ -1,0 +1,102 @@
+{
+  "status": "succeeded",
+  "analysis": {
+    "executive_summary": "RUN-A-SUPPLIER-014-01: user confirmed completed; recorded human-active time 1448838 milliseconds; full timing confirmed; no independent quality score. RUN-B-SUPPLIER-014-02: user confirmed completed; recorded human-active time 271016 milliseconds; full timing confirmed; no independent quality score.",
+    "comparison_scope": "multi_run",
+    "findings": [
+      {
+        "observation_id": "RUN-A-SUPPLIER-014-01#human-time",
+        "title": "Recorded human-active timing status",
+        "observation": "RUN-A-SUPPLIER-014-01: human-active time was recorded as 1448838 milliseconds.",
+        "observation_confidence": "high",
+        "possible_explanations": [
+          "Hypothesis: Version A's output required additional manual verification/checking by the operator to feel confident despite meeting automated pass criteria.",
+          "Hypothesis: Version A introduced subtle anomalies that prompted extra human scrutiny but did not trigger intervention or rework flags."
+        ],
+        "evidence_needed": [
+          "Detailed timestamped logs of operator actions showing verification steps (e.g., document review, cross-checks) during RUN-A.",
+          "Video or screen capture of the operator's interface to observe whether extra checking behavior occurred."
+        ],
+        "evidence_refs": [
+          "RUN-A-SUPPLIER-014-01"
+        ]
+      },
+      {
+        "observation_id": "RUN-B-SUPPLIER-014-02#human-time",
+        "title": "Recorded human-active timing status",
+        "observation": "RUN-B-SUPPLIER-014-02: human-active time was recorded as 271016 milliseconds.",
+        "observation_confidence": "high",
+        "possible_explanations": [
+          "Hypothesis: Version B's output was sufficiently clear that the operator needed minimal verification.",
+          "Hypothesis: Version B had fewer latent issues, reducing the need for extra human checking."
+        ],
+        "evidence_needed": [
+          "Timestamped logs of operator actions during RUN-B to confirm low verification activity.",
+          "Comparison of verification step counts between RUN-A and RUN-B."
+        ],
+        "evidence_refs": [
+          "RUN-B-SUPPLIER-014-02"
+        ]
+      }
+    ],
+    "residual_human_work": [
+      {
+        "observation_id": "RUN-A-SUPPLIER-014-01/EV-007#human-event",
+        "work": "Human checking or correction work recorded",
+        "observed_context": "RUN-A-SUPPLIER-014-01/EV-007: a reviewed human-authored event was recorded.",
+        "cause_not_established": true,
+        "evidence_needed": [
+          "Specific description of the checking or correction work performed in EV-007 (what was checked, why).",
+          "Outcome of that work (whether any changes were made or if it was purely confirmatory)."
+        ],
+        "evidence_refs": [
+          "RUN-A-SUPPLIER-014-01/EV-007"
+        ]
+      }
+    ],
+    "recommended_next_experiment": "Run a blinded crossover test where the operator executes both versions without knowing which is which, while recording all verification actions (logs, video) and using the same automated pass/fail criteria to isolate version-dependent differences in human effort.",
+    "limitations": [
+      "The analysis is limited to 2 reviewed runs: RUN-A-SUPPLIER-014-01, RUN-B-SUPPLIER-014-02.",
+      "No reviewed Human baseline was supplied.",
+      "User-confirmed completion is not independent business quality verification, a causal efficiency result, or enterprise ROI evidence.",
+      "Declared study context: same operator, repeated material, fixed run order, prior development exposure. Familiarity and order effects are not established as controlled."
+    ]
+  },
+  "call_evidence": {
+    "provider": "Nebius Token Factory",
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "endpoint_origin": "https://api.tokenfactory.nebius.com",
+    "prompt_version": "evidence-analyst-v0.7",
+    "generation_version": "nebius-json-v0.3",
+    "generation_parameters": {
+      "temperature": 0.1,
+      "max_tokens": 4096,
+      "response_format": {
+        "type": "json_object"
+      }
+    },
+    "model_call_made": true,
+    "http_status": 200,
+    "request_id": "3b50e035803b2a4e8a4cd557e2d622cf",
+    "response_id": "chatcmpl-88760be2a8312c83",
+    "returned_model": "nvidia/nemotron-3-super-120b-a12b",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 1786,
+      "completion_tokens": 1461,
+      "total_tokens": 3247,
+      "reasoning_tokens": 1058
+    },
+    "started_at": "2026-10-03T13:38:34.202Z",
+    "completed_at": "2026-10-03T13:38:56.341Z",
+    "latency_ms": 22139,
+    "input_sha256": "e37b958efebf3090a4ce6d534513b9b8d6b3eddcee64abcd9a1954f126a3b358",
+    "request_sha256": "bf70c855dd501545f2d52b3df4aeb5e15d51d21265adc1ced20e42f25bb6e4b1",
+    "raw_output_sha256": "14d3af274d46c17e80d90f5b666d83a0e5768384aab6606cb960bc47041038ca",
+    "input_run_ids": [
+      "RUN-A-SUPPLIER-014-01",
+      "RUN-B-SUPPLIER-014-02"
+    ],
+    "output_sha256": "da3a4f369adad6fe9c6a6f65ff3e0f71a385afce89be9b71b7cb15b1352931ea"
+  }
+}

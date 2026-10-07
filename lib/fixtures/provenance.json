@@ -1,0 +1,30 @@
+{
+  "schema_version": "test-fixture-provenance-v0.1",
+  "purpose": "offline tests only; not runtime defaults, new model calls or current approval",
+  "files": [
+    {
+      "file": "product-request.prepared.json",
+      "original_workspace_path": "outputs/2026-10-03-time-analyst-preparation/product-request.prepared.json",
+      "sha256": "9b45be3da690700ce7c663b603d2dcda4b3a6c69c63ed2a3e8f0c34b38b0e50b",
+      "required_by": "lib/ai-analyst-completion.test.mjs"
+    },
+    {
+      "file": "v0.7-product-response.json",
+      "original_workspace_path": "work/readiness/2026-10-03-time-analyst/live-calls/2026-10-03T13-38-34.184Z/product-response.json",
+      "sha256": "02d9001afa988d86b94b8a4e7eb019e318caebf3b01db5f2c19b6326b67e9e79",
+      "required_by": "lib/ai-analyst-completion.test.mjs"
+    },
+    {
+      "file": "test-only-benchmark.json",
+      "original_workspace_path": "work/readiness/2026-10-02-time-flow/test-only-input/test-only-benchmark.json",
+      "sha256": "491e7e471f0236c6e96567df6c758714ed2837934eabd8014ceef5b315b2b490",
+      "required_by": "lib/benchmark-import.test.mjs"
+    },
+    {
+      "file": "smoke-runs.json",
+      "original_workspace_path": "work/evaluator/fixtures/smoke-runs.json",
+      "sha256": "846bb6a24663a00ddbe59151f093bfbc3b51a423d258fab260a1f3eab5ca7f6e",
+      "required_by": "lib/human-timing.test.mjs"
+    }
+  ]
+}

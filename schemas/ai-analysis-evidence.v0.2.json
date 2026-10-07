@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://automation-auditor.local/schemas/ai-analysis-evidence.v0.2.json",
+  "title": "Automation Auditor AI Analysis Evidence v0.2",
+  "type": "object",
+  "required": ["status", "call_evidence"],
+  "properties": {
+    "status": { "enum": ["succeeded", "unavailable", "failed"] },
+    "error": { "type": "string" },
+    "analysis": {
+      "type": "object",
+      "required": ["executive_summary", "comparison_scope", "findings", "residual_human_work", "recommended_next_experiment", "limitations"],
+      "properties": {
+        "executive_summary": { "type": "string", "minLength": 1 },
+        "comparison_scope": { "enum": ["single_run", "multi_run"] },
+        "findings": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "required": ["title", "observation", "observation_confidence", "possible_explanations", "evidence_needed", "evidence_refs"],
+            "properties": {
+              "title": { "type": "string", "minLength": 1 },
+              "observation": { "type": "string", "minLength": 1 },
+              "observation_confidence": { "enum": ["high", "medium", "low"] },
+              "possible_explanations": {
+                "type": "array",
+                "maxItems": 3,
+                "items": { "type": "string", "pattern": "^Hypothesis:\\s+\\S" }
+              },
+              "evidence_needed": { "type": "array", "minItems": 1, "maxItems": 5, "items": { "type": "string", "minLength": 1 } },
+              "evidence_refs": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "type": "string", "minLength": 1 } }
+            },
+            "additionalProperties": false
+          }
+        },
+        "residual_human_work": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "required": ["work", "observed_context", "cause_not_established", "evidence_needed", "evidence_refs"],
+            "properties": {
+              "work": { "type": "string", "minLength": 1 },
+              "observed_context": { "type": "string", "minLength": 1 },
+              "cause_not_established": { "const": true },
+              "evidence_needed": { "type": "array", "minItems": 1, "maxItems": 5, "items": { "type": "string", "minLength": 1 } },
+              "evidence_refs": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "type": "string", "minLength": 1 } }
+            },
+            "additionalProperties": false
+          }
+        },
+        "recommended_next_experiment": { "type": "string", "minLength": 1 },
+        "limitations": { "type": "array", "maxItems": 8, "items": { "type": "string", "minLength": 1 } }
+      },
+      "additionalProperties": false
+    },
+    "call_evidence": {
+      "type": "object",
+      "required": ["provider", "model", "prompt_version", "model_call_made"],
+      "properties": {
+        "provider": { "const": "Nebius Token Factory" },
+        "model": { "type": "string", "minLength": 1 },
+        "endpoint_origin": { "type": "string", "format": "uri" },
+        "prompt_version": { "const": "evidence-analyst-v0.2" },
+        "generation_version": { "type": "string", "minLength": 1 },
+        "generation_parameters": { "type": "object" },
+        "model_call_made": { "type": "boolean" },
+        "http_status": { "type": ["integer", "null"] },
+        "request_id": { "type": "string" },
+        "response_id": { "type": ["string", "null"] },
+        "returned_model": { "type": ["string", "null"] },
+        "finish_reason": { "type": ["string", "null"] },
+        "usage": { "type": "object" },
+        "started_at": { "type": "string", "format": "date-time" },
+        "completed_at": { "type": "string", "format": "date-time" },
+        "latency_ms": { "type": "integer", "minimum": 0 },
+        "input_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "request_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "raw_output_sha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+        "output_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "input_run_ids": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "failure_stage": { "type": "string" },
+        "provider_error_category": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

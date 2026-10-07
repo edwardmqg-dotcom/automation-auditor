@@ -1,0 +1,5 @@
+# Wrangler-compatible local server secrets. Copy to .dev.vars and keep the real file untracked.
+NEBIUS_ANALYST_ENABLED=false
+NEBIUS_API_KEY=
+NEBIUS_BASE_URL=https://api.tokenfactory.nebius.com/v1
+NEBIUS_MODEL=nvidia/nemotron-3-super-120b-a12b

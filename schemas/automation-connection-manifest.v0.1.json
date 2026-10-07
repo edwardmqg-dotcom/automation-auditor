@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://automation-auditor.local/schema/automation-connection-manifest.v0.1.json",
+  "title": "Automation Auditor Connection Manifest v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "manifest_id", "automation", "versions", "adapter", "contracts", "validation", "created_at"],
+  "properties": {
+    "schema_version": { "const": "automation-connection-manifest-v0.1" },
+    "manifest_id": { "type": "string", "minLength": 1 },
+    "automation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["automation_id", "display_name", "task_kind", "purpose"],
+      "properties": {
+        "automation_id": { "type": "string", "minLength": 1 },
+        "display_name": { "type": "string", "minLength": 1 },
+        "task_kind": { "type": "string", "minLength": 1, "pattern": "^[a-z0-9][a-z0-9_-]*$" },
+        "purpose": { "type": "string", "minLength": 1 }
+      }
+    },
+    "versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["current", "candidate"],
+      "properties": {
+        "current": { "$ref": "#/$defs/versionA" },
+        "candidate": { "oneOf": [{ "$ref": "#/$defs/versionB" }, { "type": "null" }] }
+      }
+    },
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "target_url", "credential_ref"],
+      "properties": {
+        "type": { "enum": ["guided", "events", "api"] },
+        "target_url": { "type": "string", "format": "uri", "pattern": "^https?://" },
+        "credential_ref": { "type": "null" }
+      }
+    },
+    "contracts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "output", "events"],
+      "properties": {
+        "input": { "$ref": "#/$defs/inputContract" },
+        "output": { "$ref": "#/$defs/outputContract" },
+        "events": { "$ref": "#/$defs/eventContract" }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_status", "connectivity_status", "checked_at", "checks"],
+      "properties": {
+        "contract_status": { "enum": ["valid", "invalid"] },
+        "connectivity_status": { "enum": ["not_tested", "manual_confirmation_required"] },
+        "checked_at": { "type": "string", "format": "date-time" },
+        "checks": { "type": "array", "minItems": 6, "items": { "$ref": "#/$defs/check" } }
+      }
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "versionA": {
+      "type": "object", "additionalProperties": false, "required": ["role", "version_id"],
+      "properties": { "role": { "const": "A" }, "version_id": { "type": "string", "minLength": 1 } }
+    },
+    "versionB": {
+      "type": "object", "additionalProperties": false, "required": ["role", "version_id"],
+      "properties": { "role": { "const": "B" }, "version_id": { "type": "string", "minLength": 1 } }
+    },
+    "inputContract": {
+      "type": "object", "additionalProperties": false, "required": ["transport", "schema_ref"],
+      "properties": { "transport": { "enum": ["manual_files", "json_http", "shared_reference"] }, "schema_ref": { "type": "string", "minLength": 1 } }
+    },
+    "outputContract": {
+      "type": "object", "additionalProperties": false, "required": ["transport", "schema_ref"],
+      "properties": { "transport": { "enum": ["manual_import", "json_http", "event_stream"] }, "schema_ref": { "type": "string", "minLength": 1 } }
+    },
+    "eventContract": {
+      "type": "object", "additionalProperties": false, "required": ["source", "schema_ref"],
+      "properties": { "source": { "enum": ["run_console", "webhook", "api_response"] }, "schema_ref": { "const": "event-schema.v0.3.json" } }
+    },
+    "check": {
+      "type": "object", "additionalProperties": false, "required": ["id", "label", "passed", "detail"],
+      "properties": {
+        "id": { "enum": ["identity", "versions", "adapter", "input", "output", "events"] },
+        "label": { "type": "string", "minLength": 1 },
+        "passed": { "type": "boolean" },
+        "detail": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
