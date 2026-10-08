@@ -307,6 +307,7 @@ export default function Home() {
   const [runRecoveryNotice, setRunRecoveryNotice] = useState("");
   const [analystState, setAnalystState] = useState<"idle" | "loading" | "succeeded" | "unavailable" | "failed">("idle");
   const [analystEnvelope, setAnalystEnvelope] = useState<AiAnalystEnvelope | null>(null);
+  const analystRequestRef = useRef<{ body: string; key: string } | null>(null);
   const modeRef = useRef(mode);
   const runStateRef = useRef(runState);
   const humanActiveRef = useRef(humanActive);
@@ -829,17 +830,23 @@ export default function Home() {
     }
   }
 
-  async function runAiAnalysis() {
+  async function runAiAnalysis(reviewerAccessCode: string) {
     if (completedRuns.length < 1 || analystState === "loading") return;
     setAnalystState("loading");
     setAnalystEnvelope(null);
     try {
+      const body = JSON.stringify({ runs: completedRuns });
+      // Keep the same identity after transport or settlement uncertainty.
+      if (!analystRequestRef.current || analystRequestRef.current.body !== body) {
+        analystRequestRef.current = { body, key: crypto.randomUUID() };
+      }
       const response = await fetch("/api/analyst", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ runs: completedRuns }),
+        headers: { "Content-Type": "application/json", "Idempotency-Key": analystRequestRef.current.key, ...(reviewerAccessCode ? { Authorization: `Bearer ${reviewerAccessCode}` } : {}) },
+        body,
       });
       const payload = await response.json() as AiAnalystEnvelope;
+      if (payload.status === "succeeded") analystRequestRef.current = null;
       setAnalystEnvelope(payload);
       if (payload.status === "succeeded" && payload.analysis) setAnalystState("succeeded");
       else if (payload.status === "unavailable") setAnalystState("unavailable");
@@ -1942,11 +1949,12 @@ function Report({
   analystEnvelope: AiAnalystEnvelope | null;
   evidenceImportNotice: string;
   onImportCompletionEvidence: (file: File) => Promise<void>;
-  onRunAiAnalysis: () => void;
+  onRunAiAnalysis: (reviewerAccessCode: string) => void;
   onExportAiAnalysis: () => void;
   onExportEvidenceBundle: (runId: string) => void;
   onClearLocalEvidence: () => void;
 }) {
+  const [reviewerAccessCode, setReviewerAccessCode] = useState("");
   const analysis = analystEnvelope?.analysis;
   const callEvidence = analystEnvelope?.call_evidence;
   return (
@@ -1981,7 +1989,9 @@ function Report({
           </div>
           <div className="analyst-actions">
             <span className="protocol-badge"><StatusDot tone={analystState === "succeeded" ? "good" : analystState === "loading" ? "warn" : "idle"} /> {analystState === "succeeded" ? "Verified model output" : analystState === "loading" ? "Calling Token Factory" : analystState === "unavailable" ? "Analysis unavailable" : analystState === "failed" ? "Call failed" : "Not yet run"}</span>
-            <button className="primary-action" disabled={completedRuns.length < 1 || analystState === "loading"} onClick={onRunAiAnalysis}>{analystState === "loading" ? "Analyzing…" : analystState === "succeeded" ? "Run again" : "Analyze evidence"}</button>
+            <label>Reviewer access code<Input type="password" aria-label="Reviewer access code" autoComplete="off" maxLength={256} value={reviewerAccessCode} onChange={(event) => setReviewerAccessCode(event.target.value)} /></label>
+            <small>Memory only; not your Nebius API key. A hosted analyst requires reviewer access.</small>
+            <button className="primary-action" disabled={completedRuns.length < 1 || analystState === "loading"} onClick={() => onRunAiAnalysis(reviewerAccessCode)}>{analystState === "loading" ? "Analyzing…" : analystState === "succeeded" ? "Run again" : "Analyze evidence"}</button>
           </div>
         </div>
 

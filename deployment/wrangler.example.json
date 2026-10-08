@@ -1,0 +1,26 @@
+{
+  "name": "automation-auditor-your-instance",
+  "account_id": "",
+  "main": "../dist/server/index.js",
+  "compatibility_date": "2026-05-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "no_bundle": true,
+  "rules": [{ "type": "ESModule", "globs": ["**/*.js", "**/*.mjs"] }],
+  "assets": { "directory": "../dist/client" },
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": {
+    "NEBIUS_ANALYST_ENABLED": "false",
+    "NEBIUS_MODEL": "nvidia/nemotron-3-super-120b-a12b",
+    "ANALYST_PRICING_VERSION": "",
+    "ANALYST_PRICING_VERIFIED_AT": "",
+    "ANALYST_PRICING_VALID_UNTIL": ""
+  },
+  "d1_databases": [{
+    "binding": "ANALYST_BUDGET_DB",
+    "database_name": "automation-auditor-your-budget",
+    "database_id": "",
+    "migrations_dir": "cloud-migrations"
+  }],
+  "observability": { "enabled": false }
+}
