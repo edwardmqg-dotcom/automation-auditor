@@ -36,6 +36,7 @@ yarn-error.log*
 !.dev.vars.example
 /.openai/
 /deployment/wrangler.local.json
+/deployment/wrangler.production.json
 
 # vercel
 .vercel

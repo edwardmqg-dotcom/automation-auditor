@@ -67,7 +67,7 @@ export type ImportedFileCheck = BenchmarkInputFile & {
 
 export type BenchmarkImportResult = {
   manifest: BenchmarkPackageManifest | null;
-  status: "idle" | "validating" | "invalid" | "ready";
+  status: "idle" | "validating" | "invalid" | "needs_setup" | "ready";
   errors: string[];
   file_checks: ImportedFileCheck[];
   imported_file_count: number;
@@ -144,15 +144,76 @@ async function sha256(file: File) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export async function validateBenchmarkFiles(selectedFiles: File[]): Promise<BenchmarkImportResult> {
-  const jsonFiles = selectedFiles.filter((file) => file.name.toLowerCase().endsWith(".json"));
-  // Discover by declared schema, not extension count: JSON may itself be task input.
-  const parsedJson = await Promise.all(jsonFiles.map(async (file) => {
-    try { return { file, value: JSON.parse(await file.text()) as unknown }; }
+async function discoverTaskManifests(files: File[]) {
+  const parsed = await Promise.all(files.filter(file => file.name.toLowerCase().endsWith(".json")).map(async file => {
+    const text = await file.text();
+    try { return { file, value: JSON.parse(text) as unknown }; }
     catch { return { file, value: null }; }
   }));
-  const candidates = parsedJson.filter(({ value }) => isObject(value) && [BENCHMARK_PACKAGE_SCHEMA_VERSION, LEGACY_BENCHMARK_PACKAGE_SCHEMA_VERSION].includes(String(value.schema_version)));
-  if (candidates.length !== 1) return { manifest: null, status: "invalid", errors: ["Select exactly one supported task package manifest JSON plus all listed input files."], file_checks: [], imported_file_count: selectedFiles.length, selected_files: selectedFiles };
+  return parsed.filter(({ value }) => isObject(value) && typeof value.schema_version === "string" && value.schema_version.startsWith("benchmark-package-manifest-"));
+}
+
+function rejectedFiles(files: File[], errors: string[]): BenchmarkImportResult {
+  return { manifest: null, status: "invalid", errors, file_checks: [], imported_file_count: files.length, selected_files: files };
+}
+
+function selectionErrors(files: File[]) {
+  const errors: string[] = [];
+  if (!files.length) errors.push("Choose at least one task file.");
+  const names = new Set<string>();
+  for (const file of files) {
+    if (!file.name || /[/\\\0]/.test(file.name) || [".", ".."].includes(file.name)) errors.push(`Unsafe task filename: ${file.name}.`);
+    if (names.has(file.name)) errors.push(`Duplicate selected filename: ${file.name}.`);
+    names.add(file.name);
+  }
+  return errors;
+}
+
+// New selection may be raw materials. Restore remains strict via validateBenchmarkFiles.
+export async function prepareBenchmarkFiles(files: File[]): Promise<BenchmarkImportResult> {
+  const errors = selectionErrors(files);
+  if (errors.length) return rejectedFiles(files, errors);
+  const candidates = await discoverTaskManifests(files);
+  if (candidates.length) return validateBenchmarkFiles(files);
+  return { manifest: null, status: "needs_setup", errors: [], file_checks: [], imported_file_count: files.length, selected_files: files };
+}
+
+export type LocalTaskSetup = { name: string; instructions: string; taskKind?: string };
+
+export async function createLocalTaskPackage(files: File[], setup: LocalTaskSetup, now = new Date()): Promise<BenchmarkImportResult> {
+  const errors = selectionErrors(files);
+  const name = setup.name.trim(), instructions = setup.instructions.trim(), taskKind = setup.taskKind ?? "local_task";
+  if (!name) errors.push("Enter a task name.");
+  if (!instructions) errors.push("Describe the task and what counts as complete.");
+  if (!taskKindPattern.test(taskKind)) errors.push("The saved tool task type is invalid. Check the tool setup again.");
+  if (errors.length) return rejectedFiles(files, errors);
+  if ((await discoverTaskManifests(files)).length) return rejectedFiles(files, ["Use the selected task package JSON directly; do not replace its declared task instructions."]);
+  const existingNames = new Set(files.map(file => file.name));
+  const uniqueName = (stem: string, extension: string) => {
+    let candidate = `${stem}.${extension}`, count = 1;
+    while (existingNames.has(candidate)) candidate = `${stem}-${count++}.${extension}`;
+    existingNames.add(candidate);
+    return candidate;
+  };
+  const instructionFile = new File([instructions + "\n"], uniqueName("automation-auditor-task-instructions", "txt"), { type: "text/plain" });
+  const inputs = [...files, instructionFile];
+  const inventory = await Promise.all(inputs.map(async file => ({ path: file.name, media_type: file.type || "application/octet-stream", size_bytes: file.size, sha256: await sha256(file) })));
+  const reviewAsOf = now.toISOString().slice(0, 10);
+  const identity = await sha256(new File([JSON.stringify({ name, taskKind, reviewAsOf, inventory: [...inventory].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0) })], "identity.txt"));
+  const manifest: BenchmarkPackageManifest = {
+    schema_version: BENCHMARK_PACKAGE_SCHEMA_VERSION,
+    benchmark_id: `LOCAL-${identity}`, task_id: `TASK-${identity}`, task_version: "local-task-v1",
+    display_name: name, task_kind: taskKind, description: "Task prepared locally from user-selected files and user-defined completion instructions.",
+    review_as_of: reviewAsOf, created_at: now.toISOString(), input_files: inventory,
+    completion_criteria: { basis: "user_confirmation", instructions_file: instructionFile.name },
+  };
+  const manifestFile = new File([JSON.stringify(manifest, null, 2)], uniqueName("automation-auditor-task-package", "json"), { type: "application/json" });
+  return validateBenchmarkFiles([...files, instructionFile, manifestFile]);
+}
+
+export async function validateBenchmarkFiles(selectedFiles: File[]): Promise<BenchmarkImportResult> {
+  const candidates = await discoverTaskManifests(selectedFiles);
+  if (candidates.length !== 1) return rejectedFiles(selectedFiles, [candidates.length > 1 ? "Select only one task package JSON, with its listed files." : "The saved task record is missing. Select task files in Benchmarks to prepare a task; a package JSON is optional."]);
   const { file: manifestFile, value: parsed } = candidates[0];
 
   const inspected = inspectBenchmarkManifest(parsed);

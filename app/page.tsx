@@ -15,6 +15,7 @@ import {
   FileText,
   FlaskConical,
   History,
+  House,
   Link2,
   LockKeyhole,
   Pause,
@@ -27,10 +28,16 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { ResultReferenceField } from "@/components/result-reference-field";
+import { BenchmarkCertificateResult } from "@/components/benchmark-certificate";
+import { saveResultReference } from "@/lib/result-reference.mjs";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import {
   buildConnectionManifest,
   inspectConnectionDraft,
+  inspectToolSetupDraft,
+  bindToolSetupToTask,
+  toolSetupSignature,
   type AdapterType,
   type AutomationConnectionManifest,
   type ConnectionDraft,
@@ -41,6 +48,9 @@ import {
 } from "@/lib/automation-connection";
 import {
   validateBenchmarkFiles,
+  prepareBenchmarkFiles,
+  createLocalTaskPackage,
+  type LocalTaskSetup,
   BENCHMARK_PACKAGE_SCHEMA_VERSION,
   assertBenchmarkCompletionCriteria,
   benchmarkCompletionCriteriaRef,
@@ -49,14 +59,17 @@ import {
   type BenchmarkPackageManifest,
 } from "@/lib/benchmark-import";
 import { calculateRunMetrics } from "@/lib/metric-calculator.mjs";
-import { calculateTimeComparison, type TimeComparison } from "@/lib/time-comparison.mjs";
+import { composeTaskInstructions } from "@/lib/task-instructions.mjs";
+import { readTaskInstructions } from "@/lib/task-instructions-view";
+import { canSubmitTaskResult, canSaveCompleteMeasurement, measurementReady, nextAvailableRunSequence, runConsolePrompt, runWorkInstructions } from "@/lib/run-console-ui";
 import { inspectCompletionBundle } from "@/lib/completion-bundle-import.mjs";
 import { clearEvidenceBundles, listEvidenceBundles, saveEvidenceBundle } from "@/lib/evidence-store";
 import { hasMeasuredHumanTime } from "@/lib/timing-evidence.mjs";
-import { humanElapsedMs, includedHumanEvents } from "@/lib/human-timing.mjs";
+import { humanElapsedMs } from "@/lib/human-timing.mjs";
 import { inspectRunDraft, recoverInterruptedRun, RUN_DRAFT_KEY, RUN_DRAFT_VERSION } from "@/lib/run-draft.mjs";
 import type { RunDraft } from "@/lib/run-draft.mjs";
-import { loadLocalWorkspace, saveLocalWorkspace } from "@/lib/workspace-store";
+import { loadLocalWorkspace, saveLocalWorkspace, loadToolSetupDraft, saveToolSetupDraft } from "@/lib/workspace-store";
+import { inspectWorkflowComparisons, isRunInComparisonToolScope, workflowNextStep, workflowPageNextStep, type WorkflowState } from "@/lib/workflow-guidance";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -69,7 +82,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 
-type NavKey = "automations" | "benchmarks" | "run" | "compare" | "report";
+type NavKey = "home" | "automations" | "benchmarks" | "run" | "compare" | "report";
 type RunMode = "Human" | "Version A" | "Version B";
 type RunState = "ready" | "running" | "submitted" | "reviewed";
 type AutomationConnection = {
@@ -100,7 +113,7 @@ type AuditEvent = {
   task_id: string;
   task_version: string;
   actor: "system" | "human";
-  event_type: "task_loaded" | "run_started" | "human_action" | "human_review" | "human_correction" | "system_wait" | "run_completed" | "review_submitted" | "acceptance_passed" | "acceptance_failed" | "timing_excluded";
+  event_type: "task_loaded" | "run_started" | "human_action" | "human_review" | "human_correction" | "system_wait" | "system_action" | "run_completed" | "review_submitted" | "acceptance_passed" | "acceptance_failed" | "timing_excluded";
   started_at: string;
   ended_at: string;
   duration_ms: number;
@@ -122,6 +135,10 @@ type AuditEvent = {
     completion_basis?: "user_confirmation";
     completion_criteria_ref?: string;
     timing_complete?: boolean;
+    reference_action?: string;
+    previous_output_ref?: string;
+    next_output_ref?: string;
+    original_output_ref?: string;
   };
 };
 
@@ -231,6 +248,7 @@ type CompletedRun = {
 };
 
 const navigation = [
+  { key: "home" as const, label: "Home", icon: House },
   { key: "automations" as const, label: "Automations", icon: Plug },
   { key: "benchmarks" as const, label: "Benchmarks", icon: FlaskConical },
   { key: "run" as const, label: "Run Console", icon: Activity },
@@ -268,7 +286,9 @@ function StatusDot({ tone }: { tone: "good" | "warn" | "idle" }) {
 }
 
 export default function Home() {
-  const [activeNav, setActiveNav] = useState<NavKey>("automations");
+  const [activeNav, setActiveNav] = useState<NavKey>("home");
+  const [preparedSetup, setPreparedSetup] = useState<ConnectionDraft | null>(null);
+  const [setupError, setSetupError] = useState("");
   const [automation, setAutomation] = useState<AutomationConnection | null>(null);
   const [connectivityEvidence, setConnectivityEvidence] = useState<ConnectivityEvidence | null>(null);
   const [benchmarkImport, setBenchmarkImport] = useState<BenchmarkImportResult>({ manifest: null, status: "idle", errors: [], file_checks: [], imported_file_count: 0, selected_files: [] });
@@ -284,7 +304,7 @@ export default function Home() {
   const [draftOutputTransport, setDraftOutputTransport] = useState<OutputTransport>("manual_import");
   const [draftEventSource, setDraftEventSource] = useState<EventSource>("run_console");
   const [validatedDraftSignature, setValidatedDraftSignature] = useState<string | null>(null);
-  const [mode, setMode] = useState<RunMode>("Version A");
+  const [mode, setMode] = useState<RunMode>("Human");
   const [runState, setRunState] = useState<RunState>("ready");
   const [humanActive, setHumanActive] = useState(false);
   const [activeSeconds, setActiveSeconds] = useState(0);
@@ -294,6 +314,7 @@ export default function Home() {
   const [reviewerRef, setReviewerRef] = useState("");
   const [completionCriteriaRef, setCompletionCriteriaRef] = useState("");
   const [finalOutputRef, setFinalOutputRef] = useState("");
+  const [resultReferenceDirty, setResultReferenceDirty] = useState(false);
   const [timingComplete, setTimingComplete] = useState(false);
   const [acceptanceDecision, setAcceptanceDecision] = useState<"pass" | "fail" | "">("");
   const [decisionNote, setDecisionNote] = useState("");
@@ -321,6 +342,15 @@ export default function Home() {
   const runIdRef = useRef("");
   const workspaceSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sealingRef = useRef(false);
+  const importSequenceRef = useRef(0);
+
+  function restoreSetupFields(draft: ConnectionDraft) {
+    setDraftName(draft.name); setDraftTaskKind(draft.taskKind);
+    setDraftPurpose(draft.purpose); setDraftVersionA(draft.versionA); setDraftVersionB(draft.versionB);
+    setDraftAdapter(draft.adapter); setDraftTargetUrl(draft.targetUrl);
+    setDraftInputTransport(draft.inputTransport); setDraftOutputTransport(draft.outputTransport); setDraftEventSource(draft.eventSource);
+    setValidatedDraftSignature(toolSetupSignature(draft));
+  }
 
   useEffect(() => {
     const refresh = () => {
@@ -364,7 +394,10 @@ export default function Home() {
     void loadLocalWorkspace()
       .then(async (snapshot) => {
         if (!active) return;
+        const prepared = await loadToolSetupDraft();
+        if (!active) return;
         if (!snapshot) {
+          if (prepared) { setPreparedSetup(prepared); restoreSetupFields(prepared); }
           setWorkspaceStoreStatus("ready");
           setRunPersistenceStatus("ready");
           return;
@@ -396,7 +429,7 @@ export default function Home() {
         setDraftInputTransport(restoredDraft.inputTransport);
         setDraftOutputTransport(restoredDraft.outputTransport);
         setDraftEventSource(restoredDraft.eventSource);
-        setValidatedDraftSignature(JSON.stringify(restoredDraft));
+        setValidatedDraftSignature(toolSetupSignature(restoredDraft));
         setConnectivityEvidence(null);
         connectivityEvidenceRef.current = null;
 
@@ -451,6 +484,7 @@ export default function Home() {
             ? `Recovered ${draft.run_id}; human timing is paused. Only work observed through ${new Date(draft.saved_at).toLocaleString()} was counted.`
             : `Recovered ${draft.run_id} from the local run checkpoint.`);
         }
+        if (!rawDraft && prepared) { setPreparedSetup(prepared); restoreSetupFields(prepared); setAttachedBenchmark(null); attachedBenchmarkRef.current = null; }
         setWorkspaceStoreStatus("ready");
         setRunPersistenceStatus("ready");
       })
@@ -476,9 +510,11 @@ export default function Home() {
     eventsRef.current = events;
   }, [activeSeconds, attachedBenchmark, automation, benchmarkImport, connectivityEvidence, events, humanActive, mode, runState]);
 
+  const runPrefix = `RUN-${mode.replace("Version ", "").toUpperCase()}-${runToken(attachedBenchmark?.task_id ?? "TASK")}-`;
+  const availableRunSequence = runState === "ready" ? nextAvailableRunSequence(runPrefix, runSequence, completedRuns.map(run => run.manifest.run_id)) : runSequence;
   const runId = useMemo(
-    () => `RUN-${mode.replace("Version ", "").toUpperCase()}-${runToken(attachedBenchmark?.task_id ?? "TASK")}-${String(runSequence).padStart(2, "0")}`,
-    [attachedBenchmark?.task_id, mode, runSequence],
+    () => `${runPrefix}${String(availableRunSequence).padStart(2, "0")}`,
+    [runPrefix, availableRunSequence],
   );
 
   useEffect(() => {
@@ -537,9 +573,15 @@ export default function Home() {
     outputTransport: draftOutputTransport,
     eventSource: draftEventSource,
   }), [draftAdapter, draftEventSource, draftInputTransport, draftName, draftOutputTransport, draftPurpose, draftTargetUrl, draftTaskKind, draftVersionA, draftVersionB]);
-  const contractChecks = useMemo(() => inspectConnectionDraft(connectionDraft), [connectionDraft]);
-  const currentDraftSignature = JSON.stringify(connectionDraft);
+  const contractChecks = useMemo(() => inspectToolSetupDraft(connectionDraft), [connectionDraft]);
+  const currentDraftSignature = toolSetupSignature(connectionDraft);
   const contractValidated = validatedDraftSignature === currentDraftSignature && contractChecks.every((check) => check.passed);
+  const setupLocked = ["running", "submitted"].includes(runState) || workspaceStoreStatus !== "ready" || evidenceStoreStatus === "saving";
+  const setupCurrent = !preparedSetup || toolSetupSignature(preparedSetup) === toolSetupSignature(connectionDraft);
+  const workflowComparison = inspectWorkflowComparisons(preparedSetup ? [] : completedRuns, automation?.manifest.automation.automation_id, attachedBenchmark ?? undefined);
+  const workflowState: WorkflowState = { loading: workspaceStoreStatus === "loading" || evidenceStoreStatus === "loading", storageError: workspaceStoreStatus === "error" || evidenceStoreStatus === "error" || runPersistenceStatus === "error", activeRun: ["running", "submitted"].includes(runState), prepared: Boolean(preparedSetup), setupDirty: Boolean(preparedSetup && !setupCurrent), connected: Boolean(automation), attached: Boolean(attachedBenchmark), comparable: workflowComparison.comparisons.length > 0, hasHuman: workflowComparison.latest.has("human_baseline") && !workflowComparison.incompleteLanes.includes("human_baseline"), needsRepeat: workflowComparison.incompleteLanes.length > 0, accessChecked: connectivityEvidence?.outcome === "verified" };
+  const guidance = workflowNextStep(workflowState);
+  const workflowStatus = [Boolean(automation || preparedSetup), Boolean(attachedBenchmark), workflowComparison.comparisons.length > 0, workflowComparison.comparisons.length > 0];
 
   function addEvent(
     eventType: AuditEvent["event_type"],
@@ -600,6 +642,7 @@ export default function Home() {
       return;
     }
     setReviewError("");
+    setRunSequence(availableRunSequence);
     setRunState("running");
     addEvent("task_loaded", "Task loaded", `Verified benchmark ${attachedBenchmark.task_id} attached to this run`);
     addEvent("run_started", "Run started", `${mode} · ${mode === "Human" ? "manual baseline" : automation ? adapterLabels[automation.adapter] : "adapter unavailable"}`, "system", undefined, { completion_criteria_ref: completionCriteriaRef.trim() });
@@ -618,27 +661,6 @@ export default function Home() {
     } else if (humanStartedAtRef.current) {
       addEvent(runStateRef.current === "submitted" ? "human_review" : "human_action", runStateRef.current === "submitted" ? "Output checking / correction segment" : "Human work segment", `Active handling captured; cumulative timestamp time ${formatDuration(Math.floor(humanElapsedMs(eventsRef.current, humanStartedAtRef.current) / 1000))}`, "human", humanStartedAtRef.current);
       humanStartedAtRef.current = null;
-    }
-  }
-
-  function logWait() {
-    addEvent("system_wait", "System wait marker", "External automation is processing; excluded from human-active time");
-  }
-
-  function excludeTiming(targetId: string, reason: string, reviewer: string, confirmationRef: string) {
-    if (humanActive || !["running", "submitted"].includes(runState)) {
-      setReviewError("Pause human work first. Sealed runs cannot be changed.");
-      return;
-    }
-    const now = new Date().toISOString();
-    const metadata = { label: "Human timing exclusion", detail: `${targetId}: ${reason.trim()} (confirmed by ${reviewer.trim()})`, target_event_id: targetId, exclusion_reason: reason.trim(), reviewer_ref: reviewer.trim(), confirmation_ref: confirmationRef.trim() };
-    try {
-      const sample: AuditEvent = { ...eventsRef.current[0], event_id: `EV-${String(eventsRef.current.length + 1).padStart(3, "0")}`, event_type: "timing_excluded", actor: "human", started_at: now, ended_at: now, duration_ms: 0, metadata, status: "completed", reason_code: "human_confirmed_non_task_work", output_ref: confirmationRef.trim() };
-      includedHumanEvents([...eventsRef.current, sample]);
-      addEvent("timing_excluded", metadata.label, metadata.detail, "human", undefined, metadata, confirmationRef.trim());
-      setReviewError("");
-    } catch (error) {
-      setReviewError(error instanceof Error ? error.message : "Invalid timing exclusion.");
     }
   }
 
@@ -679,6 +701,7 @@ export default function Home() {
   }
 
   async function recordAcceptance() {
+    if (resultReferenceDirty) { setReviewError("Finish editing the saved result path before confirming completion."); return; }
     if (sealingRef.current || !automation || !attachedBenchmark || runState !== "submitted") return;
     try { assertBenchmarkCompletionCriteria(attachedBenchmark, completionCriteriaRef); }
     catch (error) { setReviewError(error instanceof Error ? error.message : "Task criteria mismatch."); return; }
@@ -774,6 +797,26 @@ export default function Home() {
       setReviewError(error instanceof Error ? error.message : "The deterministic metric check failed.");
     } finally {
       sealingRef.current = false;
+    }
+  }
+
+  function commitResultReference(value: string) {
+    if (sealingRef.current || runStateRef.current !== "submitted" || runPersistenceStatus !== "ready") return false;
+    try {
+      const raw = window.localStorage.getItem(RUN_DRAFT_KEY);
+      const stored = raw && inspectRunDraft(JSON.parse(raw)).draft;
+      if (!stored || stored.run_id !== runId) throw new Error("The saved checkpoint is unavailable. The result reference was not changed.");
+      const current: RunDraft = { ...stored, events: eventsRef.current, active_seconds: activeSecondsRef.current, human_active: humanActiveRef.current, human_started_at: humanStartedAtRef.current, review_output_ref: reviewOutputRef, completion_form: { criteria_ref: completionCriteriaRef, final_output_ref: finalOutputRef, reviewer_ref: reviewerRef, decision_note: decisionNote, decision: acceptanceDecision, confirmed: reviewConfirmed, timing_complete: timingComplete } };
+      const result = saveResultReference(window.localStorage, current, value, new Date().toISOString());
+      if (result.changed) {
+        eventsRef.current = result.draft.events as AuditEvent[];
+        setEvents(eventsRef.current); setFinalOutputRef(result.draft.completion_form?.final_output_ref ?? "");
+        setReviewConfirmed(false); setTimingComplete(false);
+      }
+      setResultReferenceDirty(false); setReviewError(""); return true;
+    } catch (error) {
+      setReviewError(error instanceof Error ? error.message : "The result reference could not be saved. Original references remain unchanged.");
+      return false;
     }
   }
 
@@ -881,14 +924,15 @@ export default function Home() {
   }
 
   function validateConnectionContract() {
+    if (setupLocked) return;
     setValidatedDraftSignature(currentDraftSignature);
   }
 
-  async function persistWorkspace(connection: AutomationConnection, files: File[] = [], attached = false) {
+  async function persistWorkspace(connection: AutomationConnection, files: File[] = [], attached = false, completePreparedSetup = false) {
     setWorkspaceStoreStatus("saving");
     const saveOperation = workspaceSaveQueueRef.current
       .catch(() => undefined)
-      .then(() => saveLocalWorkspace(connection, files, attached));
+      .then(() => saveLocalWorkspace(connection, files, attached, completePreparedSetup));
     workspaceSaveQueueRef.current = saveOperation;
     try {
       await saveOperation;
@@ -900,26 +944,23 @@ export default function Home() {
     }
   }
 
-  function connectAutomation() {
-    if (!contractValidated) return;
-    const manifest = buildConnectionManifest(connectionDraft);
-    const connection = {
-      name: manifest.automation.display_name,
-      versionA: manifest.versions.current.version_id,
-      versionB: manifest.versions.candidate?.version_id ?? "",
-      adapter: manifest.adapter.type,
-      manifest,
-    };
-    setAutomation(connection);
-    automationRef.current = connection;
-    setConnectivityEvidence(null);
-    connectivityEvidenceRef.current = null;
-    setBenchmarkImport({ manifest: null, status: "idle", errors: [], file_checks: [], imported_file_count: 0, selected_files: [] });
-    benchmarkImportRef.current = { manifest: null, status: "idle", errors: [], file_checks: [], imported_file_count: 0, selected_files: [] };
-    setAttachedBenchmark(null);
-    attachedBenchmarkRef.current = null;
-    setActiveNav("benchmarks");
-    void persistWorkspace(connection);
+  async function connectAutomation() {
+    if (!contractValidated || setupLocked) return;
+    setSetupError("");
+    setWorkspaceStoreStatus("saving");
+    try {
+      const draft = { ...connectionDraft, taskKind: "" };
+      await saveToolSetupDraft(draft);
+      if (runState === "reviewed") resetConsole(mode);
+      setPreparedSetup(draft);
+      setAttachedBenchmark(null); attachedBenchmarkRef.current = null;
+      setDraftTaskKind(benchmarkImport.status === "ready" ? benchmarkImport.manifest?.task_kind ?? "" : "");
+      setWorkspaceStoreStatus("ready");
+      setActiveNav("benchmarks");
+    } catch (error) {
+      setWorkspaceStoreStatus("error");
+      setSetupError(error instanceof Error ? error.message : "Tool setup could not be saved. Your previous connection is unchanged.");
+    }
   }
 
   async function beginConnectivityDryRun() {
@@ -973,28 +1014,60 @@ export default function Home() {
     URL.revokeObjectURL(href);
   }
 
-  async function importBenchmark(files: File[]) {
+  async function importBenchmark(files: File[], localSetup?: LocalTaskSetup) {
     if (["running", "submitted"].includes(runStateRef.current)) { setReviewError("Finish the current run before changing its locked task package."); return; }
     if (runState === "reviewed") resetConsole(mode);
     setCompletionCriteriaRef("");
+    if (preparedSetup) setDraftTaskKind("");
     setAttachedBenchmark(null);
     attachedBenchmarkRef.current = null;
-    setBenchmarkImport({ manifest: null, status: "validating", errors: [], file_checks: [], imported_file_count: files.length, selected_files: files });
-    const result = await validateBenchmarkFiles(files);
+    const pending: BenchmarkImportResult = { manifest: null, status: "validating", errors: [], file_checks: [], imported_file_count: files.length, selected_files: files };
+    setBenchmarkImport(pending);
+    benchmarkImportRef.current = pending;
+    const sequence = ++importSequenceRef.current;
+    let result: BenchmarkImportResult;
+    try {
+      result = localSetup ? await createLocalTaskPackage(files, localSetup) : await prepareBenchmarkFiles(files);
+    } catch {
+      result = { ...pending, status: "invalid", errors: ["The selected files could not be read. Choose them again and retry; no task was connected."] };
+    }
+    if (sequence !== importSequenceRef.current) return;
     setBenchmarkImport(result);
     benchmarkImportRef.current = result;
-    if (automation) await persistWorkspace(automation, result.status === "ready" ? result.selected_files : [], false);
+    if (preparedSetup || !automation) setDraftTaskKind(result.status === "ready" ? result.manifest?.task_kind ?? "" : "");
+    if (automation && !preparedSetup) await persistWorkspace(automation, result.status === "ready" ? result.selected_files : [], false);
   }
 
-  function attachValidatedBenchmark() {
+  async function prepareLocalBenchmark(name: string, instructions: string) {
     const imported = benchmarkImportRef.current;
-    if (runStateRef.current !== "ready") return;
-    if (!automation || imported.status !== "ready" || !imported.manifest || imported.manifest.task_kind !== automation.manifest.automation.task_kind) return;
+    if (imported.status !== "needs_setup") return;
+    await importBenchmark(imported.selected_files, { name, instructions, taskKind: preparedSetup ? undefined : automation?.manifest.automation.task_kind });
+  }
+
+  async function attachValidatedBenchmark() {
+    const imported = benchmarkImportRef.current;
+    if (runStateRef.current !== "ready" || workspaceStoreStatus !== "ready" || !setupCurrent) return;
+    if (imported.status !== "ready" || !imported.manifest) return;
+    let connection = automation;
+    if (preparedSetup) {
+      const draft = bindToolSetupToTask(preparedSetup, imported.manifest.task_kind);
+      const manifest = buildConnectionManifest(draft);
+      connection = { name: manifest.automation.display_name, versionA: manifest.versions.current.version_id, versionB: manifest.versions.candidate?.version_id ?? "", adapter: manifest.adapter.type, manifest };
+    }
+    if (!connection || imported.manifest.task_kind !== connection.manifest.automation.task_kind) return;
+    if (!await persistWorkspace(connection, imported.selected_files, true, Boolean(preparedSetup))) {
+      setSetupError("The task connection was not saved. Your previous connection and evidence have not been replaced.");
+      return;
+    }
+    if (preparedSetup) {
+      setAutomation(connection); automationRef.current = connection;
+      setConnectivityEvidence(null); connectivityEvidenceRef.current = null;
+      setPreparedSetup(null);
+      restoreSetupFields(bindToolSetupToTask(preparedSetup, imported.manifest.task_kind));
+    }
     setAttachedBenchmark(imported.manifest);
     attachedBenchmarkRef.current = imported.manifest;
     setCompletionCriteriaRef(benchmarkCompletionCriteriaRef(imported.manifest) ?? "");
-    setActiveNav("run");
-    void persistWorkspace(automation, imported.selected_files, true);
   }
 
   useEffect(() => {
@@ -1217,7 +1290,7 @@ export default function Home() {
           <div className="brand-mark"><ShieldCheck size={19} /></div>
           <div>
             <p className="brand-name">Automation Auditor</p>
-            <p className="brand-meta">Human effort, measured</p>
+            <p className="brand-meta">Does automation save you time?</p>
           </div>
         </div>
 
@@ -1275,11 +1348,18 @@ export default function Home() {
           </div>
         </header>
 
-        {activeNav === "run" && automation && attachedBenchmark ? (
+        {activeNav !== "home" && <WorkflowTrail current={activeNav} status={workflowStatus} onNavigate={setActiveNav} />}
+        {setupError && <div className="workflow-alert" role="alert">{setupError}</div>}
+
+        {activeNav === "home" ? (
+          <WorkflowHome guidance={guidance} status={workflowStatus} onNavigate={setActiveNav} />
+        ) : activeNav === "run" && automation && attachedBenchmark ? (
           <RunConsole
+            key={runId}
             automation={automation}
             connectivityEvidence={connectivityEvidence}
             benchmark={attachedBenchmark}
+            benchmarkFiles={benchmarkImport.selected_files}
             mode={mode}
             runId={runId}
             runState={runState}
@@ -1299,16 +1379,18 @@ export default function Home() {
             runPersistenceStatus={runPersistenceStatus}
             runRecoveryNotice={runRecoveryNotice}
             sealing={evidenceStoreStatus === "saving"}
+            resultReferenceDirty={resultReferenceDirty}
+            onResultReferenceDirtyChange={setResultReferenceDirty}
+            onSaveResultReference={commitResultReference}
             onModeChange={resetConsole}
             onStart={startRun}
+            repeatRequired={workflowComparison.incompleteLanes.includes(modeIds[mode])}
+            runIdStored={completedRuns.some(run => run.manifest.run_id === runId)}
             onToggleHuman={toggleHumanWork}
-            onLogWait={logWait}
-            onExcludeTiming={excludeTiming}
             onComplete={completeRun}
             onReviewOutputRefChange={setReviewOutputRef}
             onReviewerRefChange={setReviewerRef}
             onCompletionCriteriaRefChange={(value) => { setCompletionCriteriaRef(value); setReviewConfirmed(false); }}
-            onFinalOutputRefChange={(value) => { setFinalOutputRef(value); setReviewConfirmed(false); }}
             onTimingCompleteChange={setTimingComplete}
             onAcceptanceDecisionChange={setAcceptanceDecision}
             onDecisionNoteChange={setDecisionNote}
@@ -1325,7 +1407,6 @@ export default function Home() {
             automation={automation}
             connectivityEvidence={connectivityEvidence}
             draftName={draftName}
-            draftTaskKind={draftTaskKind}
             draftPurpose={draftPurpose}
             draftVersionA={draftVersionA}
             draftVersionB={draftVersionB}
@@ -1338,12 +1419,13 @@ export default function Home() {
             validationAttempted={validatedDraftSignature !== null}
             validationCurrent={validatedDraftSignature === currentDraftSignature}
             contractValidated={contractValidated}
+            prepared={Boolean(preparedSetup)}
+            locked={setupLocked}
             onNameChange={setDraftName}
-            onTaskKindChange={setDraftTaskKind}
             onPurposeChange={setDraftPurpose}
             onVersionAChange={setDraftVersionA}
             onVersionBChange={setDraftVersionB}
-            onAdapterChange={setDraftAdapter}
+            onAdapterChange={(value) => { setDraftAdapter(value); }}
             onTargetUrlChange={setDraftTargetUrl}
             onInputTransportChange={setDraftInputTransport}
             onOutputTransportChange={setDraftOutputTransport}
@@ -1355,12 +1437,13 @@ export default function Home() {
             onResolveGuidedConnectivity={resolveGuidedConnectivity}
           />
         ) : activeNav === "benchmarks" ? (
-          <Benchmarks automation={automation} imported={benchmarkImport} attached={attachedBenchmark} onImport={importBenchmark} onAttach={attachValidatedBenchmark} />
+          <Benchmarks automation={automation} preparedSetup={preparedSetup} setupCurrent={setupCurrent} busy={workspaceStoreStatus !== "ready" || ["running", "submitted"].includes(runState)} imported={benchmarkImport} attached={attachedBenchmark} onImport={importBenchmark} onPrepare={prepareLocalBenchmark} onAttach={attachValidatedBenchmark} />
         ) : activeNav === "compare" ? (
-          <Compare automation={automation} completedRuns={completedRuns} />
+          <Compare automation={automation} completedRuns={completedRuns} task={attachedBenchmark} onNavigate={setActiveNav} />
         ) : (
           <Report
             automation={automation}
+            task={attachedBenchmark}
             completedRuns={completedRuns}
             analystState={analystState}
             analystEnvelope={analystEnvelope}
@@ -1372,9 +1455,34 @@ export default function Home() {
             onClearLocalEvidence={clearLocalEvidence}
           />
         )}
+        {activeNav !== "home" && activeNav !== "automations" && <NextStepPanel current={activeNav} state={workflowState} onNavigate={setActiveNav} />}
       </section>
     </main>
   );
+}
+
+const workflowSteps = [
+  { page: "automations" as const, title: "Set up your tool", label: "Automations", detail: "Choose the automation tool and version you want to test." },
+  { page: "benchmarks" as const, title: "Prepare the task", label: "Benchmarks", detail: "Import the same task files and completion instructions for every run." },
+  { page: "run" as const, title: "Record your work", label: "Run Console", detail: "Record manual work first, then work with automation, including checking and corrections." },
+  { page: "compare" as const, title: "See the time difference", label: "Compare", detail: "Find out how much human work time was saved — or added." },
+];
+
+function WorkflowTrail({ current, status, onNavigate }: { current: NavKey; status: boolean[]; onNavigate: (page: NavKey) => void }) {
+  return <nav className="workflow-trail" aria-label="Evaluation steps">{workflowSteps.map((step, index) => <button key={step.page} className={current === step.page ? "workflow-step current" : "workflow-step"} aria-current={current === step.page ? "step" : undefined} onClick={() => onNavigate(step.page)}><span>{status[index] ? <Check size={14} /> : index + 1}</span><div><strong>{step.title}</strong><small>{step.label} · {status[index] ? "Ready" : current === step.page ? "Current step" : "To do"}</small></div></button>)}</nav>;
+}
+
+function WorkflowHome({ guidance, status, onNavigate }: { guidance: ReturnType<typeof workflowNextStep>; status: boolean[]; onNavigate: (page: NavKey) => void }) {
+  return <div className="page-content workflow-home">
+    <section className="workflow-intro"><div><p className="eyebrow">Automation Auditor</p><h1>Does your automation tool<br />really save you time?</h1><p>Compare the human work time needed to complete the same task with and without automation — including checking and corrections.</p><button className="primary-action" disabled={guidance.disabled} onClick={() => onNavigate(guidance.page)}>Start evaluation<ArrowRight size={17} /></button></div></section>
+    <section className="workflow-overview"><div className="workflow-overview-heading"><h2>Four steps to a time comparison</h2><p>Use the same task and completion instructions throughout.</p></div><ol className="workflow-list">{workflowSteps.map((step, index) => <li key={step.page}><span className="workflow-number">0{index + 1}</span><div><h3>{step.title}</h3><p>{step.detail}</p></div><button className="secondary-action" onClick={() => onNavigate(step.page)}>{step.label}<ArrowRight size={15} /></button><small>{status[index] ? "Ready" : "To do"}</small></li>)}</ol></section>
+  </div>;
+}
+
+function NextStepPanel({ current, state, onNavigate }: { current: Exclude<NavKey, "home">; state: WorkflowState; onNavigate: (page: NavKey) => void }) {
+  const next = workflowPageNextStep(current, state);
+  const label = navigation.find((item) => item.key === next.page)?.label;
+  return <section className="next-step-panel" aria-label="Next step"><div><p className="eyebrow">{next.optional ? "Optional next step" : "What to do next"}</p><h2>{next.title}</h2><p>{next.detail}</p></div><button className="primary-action" disabled={next.disabled || next.page === current} onClick={() => onNavigate(next.page)}>{next.buttonLabel ?? (next.page === current ? `Continue in ${label}` : `Continue to ${label}`)}<ArrowRight size={16} /></button></section>;
 }
 
 function PageHeading({ eyebrow, title, copy }: { eyebrow: string; title: string; copy: string }) {
@@ -1391,6 +1499,7 @@ function RunConsole({
   automation,
   connectivityEvidence,
   benchmark,
+  benchmarkFiles,
   mode,
   runId,
   runState,
@@ -1413,13 +1522,13 @@ function RunConsole({
   onModeChange,
   onStart,
   onToggleHuman,
-  onLogWait,
-  onExcludeTiming,
   onComplete,
   onReviewOutputRefChange,
   onReviewerRefChange,
   onCompletionCriteriaRefChange,
-  onFinalOutputRefChange,
+  resultReferenceDirty,
+  onResultReferenceDirtyChange,
+  onSaveResultReference,
   onTimingCompleteChange,
   onAcceptanceDecisionChange,
   onDecisionNoteChange,
@@ -1428,10 +1537,13 @@ function RunConsole({
   onExportEvidenceBundle,
   onExport,
   onOpenBenchmark,
+  repeatRequired,
+  runIdStored,
 }: {
   automation: AutomationConnection;
   connectivityEvidence: ConnectivityEvidence | null;
   benchmark: BenchmarkPackageManifest;
+  benchmarkFiles: File[];
   mode: RunMode;
   runId: string;
   runState: RunState;
@@ -1454,29 +1566,32 @@ function RunConsole({
   onModeChange: (mode: RunMode) => void;
   onStart: () => void;
   onToggleHuman: () => void;
-  onLogWait: () => void;
-  onExcludeTiming: (targetId: string, reason: string, reviewer: string, confirmationRef: string) => void;
   onComplete: () => void;
   onReviewOutputRefChange: (value: string) => void;
   onReviewerRefChange: (value: string) => void;
   onCompletionCriteriaRefChange: (value: string) => void;
-  onFinalOutputRefChange: (value: string) => void;
+  resultReferenceDirty: boolean;
+  onResultReferenceDirtyChange: (dirty: boolean) => void;
+  onSaveResultReference: (value: string) => boolean;
   onTimingCompleteChange: (value: boolean) => void;
   onAcceptanceDecisionChange: (value: "pass" | "fail" | "") => void;
   onDecisionNoteChange: (value: string) => void;
   onReviewConfirmedChange: (value: boolean) => void;
   onRecordAcceptance: () => void;
+  repeatRequired: boolean;
+  runIdStored: boolean;
   onExportEvidenceBundle: () => void;
   onExport: () => void;
   onOpenBenchmark: () => void;
 }) {
-  const [timingTarget, setTimingTarget] = useState("");
-  const [timingReason, setTimingReason] = useState("");
-  const [timingReviewer, setTimingReviewer] = useState("");
-  const [timingConfirmation, setTimingConfirmation] = useState("");
-  const eligibleTiming = includedHumanEvents(events);
+  const [showResultSubmission, setShowResultSubmission] = useState(false);
+  const [showTaskInstructions, setShowTaskInstructions] = useState(false);
+  const savedMeasurementReady = Boolean(completedRun && measurementReady(calculateRunMetrics(completedRun.events)));
+  const timerPrompt = runConsolePrompt(runState, humanActive, events.some(event => event.metadata.billable_human_active), savedMeasurementReady);
+  const canFinishMeasurement = !resultReferenceDirty && canSaveCompleteMeasurement(humanActive, sealing, timingComplete, acceptanceDecision, reviewConfirmed, reviewerRef, reviewOutputRef, hasMeasuredHumanTime(events));
+  const canArchiveIncomplete = !resultReferenceDirty && !humanActive && !sealing && (!timingComplete || acceptanceDecision === "fail" || !hasMeasuredHumanTime(events)) && reviewConfirmed && Boolean(reviewerRef.trim()) && Boolean(reviewOutputRef.trim()) && Boolean(acceptanceDecision) && (acceptanceDecision !== "fail" || Boolean(decisionNote.trim()));
   const evidenceChecklist = [
-    { label: "Review output attached", complete: Boolean(reviewOutputRef.trim()) },
+    { label: "Task result reference recorded", complete: Boolean(reviewOutputRef.trim()) },
     { label: "User completion decision recorded", complete: runState === "reviewed" },
     { label: "Complete timing confirmed", complete: completedRun?.metrics.timing_complete === true },
     { label: "Shared completion criteria recorded", complete: Boolean(completedRun?.metrics.completion_criteria_ref) },
@@ -1489,11 +1604,11 @@ function RunConsole({
         <PageHeading
           eyebrow="Controlled evaluation"
           title="Run Console"
-          copy={`Measure human work for ${automation.name}, including output checking and necessary corrections. You decide when the task is completed; this app does not grade business outputs.`}
+          copy={runWorkInstructions(mode, automation.name)}
         />
-        <div className={`run-state run-state-${runState}`}>
-          <StatusDot tone={runState === "reviewed" ? "good" : runState === "running" || runState === "submitted" ? "warn" : "idle"} />
-          {runState === "reviewed" ? "Recorded & sealed" : humanActive ? "Human timer running" : runState === "ready" ? "Ready — timer not started" : runState === "submitted" ? "Timer stopped — awaiting completion decision" : "Run prepared — human timer stopped"}
+        <div className={`run-state run-state-${runState === "reviewed" && !savedMeasurementReady ? "submitted" : runState}`}>
+          <StatusDot tone={runState === "reviewed" && savedMeasurementReady ? "good" : runState !== "ready" ? "warn" : "idle"} />
+          {runState === "reviewed" ? savedMeasurementReady ? "Completion record saved" : "Measurement incomplete — repeat required" : humanActive ? "Human timer running" : runState === "ready" ? "Ready — timer not started" : runState === "submitted" ? "Timer stopped — awaiting completion decision" : "Run prepared — human timer stopped"}
         </div>
       </div>
 
@@ -1531,19 +1646,18 @@ function RunConsole({
           <section className="console-card timer-card">
             <div className="card-header">
               <div>
-                <p className="field-label">Human-active time</p>
+                <p className="field-label">Active human work time</p>
                 <div className="timer-value">{formatDuration(activeSeconds)}</div>
               </div>
               <div className={`live-indicator ${humanActive ? "is-live" : ""}`}>
                 <span /> {humanActive ? "Counting" : "Not counting"}
               </div>
             </div>
-            <p className="timer-note">Elapsed time is calculated from timestamps, including work in other tabs or apps. Pause for breaks. Confirmed non-task segments are excluded through append-only corrections.</p>
-            {runState === "ready" && <p className="timer-note">Step 1 prepares the run only. Then click Start human work and check that COUNTING appears and the timer advances before doing the task.</p>}
-            {(runState === "running" || runState === "submitted") && !humanActive && <div className="review-error" role="status"><TriangleAlert size={15} />人工计时未运行。继续审核前，请点击下方开始按钮，确认 COUNTING 且数字递增。 Human timer is stopped; starting the run alone does not record human work.</div>}
+            <p className="timer-note">Start the timer before you work. Keep it running while checking results, making necessary corrections, and saving or exporting the output. Pause for breaks or machine-only waiting. Working in another tab or app does not pause the timer.</p>
+            <div className={timerPrompt.tone === "warning" ? "timer-guidance timer-guidance-warning" : "timer-guidance"} role="status">{timerPrompt.text}</div>
             <div className="console-actions">
               {runState === "ready" && (
-                  <button className="primary-action" disabled={automationRunBlocked || runPersistenceStatus !== "ready" || !completionCriteriaRef.trim()} onClick={onStart}><Play size={17} fill="currentColor" /> {automationRunBlocked ? "Connectivity verification required" : runPersistenceStatus !== "ready" ? "Checkpoint unavailable" : "Prepare run (timer stays off)"}</button>
+                  <button className="primary-action" disabled={runIdStored || automationRunBlocked || runPersistenceStatus !== "ready" || !completionCriteriaRef.trim()} onClick={onStart}><Play size={17} fill="currentColor" /> {automationRunBlocked ? "Connectivity verification required" : runPersistenceStatus !== "ready" ? "Checkpoint unavailable" : "Prepare run (timer stays off)"}</button>
               )}
               {(runState === "running" || runState === "submitted") && (
                 <>
@@ -1551,60 +1665,60 @@ function RunConsole({
                     {humanActive ? <Pause size={17} fill="currentColor" /> : <Play size={17} fill="currentColor" />}
                     {humanActive ? "Pause human work" : runState === "submitted" ? "Start checking / correction" : "Start human work"}
                   </button>
-                  <button className="secondary-action" disabled={humanActive} onClick={onLogWait}><Clock3 size={17} /> Log system wait</button>
-                  {runState === "running" && <button className="complete-action" disabled={humanActive || !reviewOutputRef.trim()} onClick={onComplete}><Square size={15} fill="currentColor" /> Submit output</button>}
+                  {runState === "running" && <button className="complete-action" disabled={humanActive || sealing || runPersistenceStatus !== "ready"} aria-expanded={showResultSubmission} aria-controls="task-result-submission" onClick={() => setShowResultSubmission(true)}><Square size={15} fill="currentColor" /> Submit task result</button>}
                 </>
               )}
               {runState === "submitted" && (
-                <div className="locked-message"><LockKeyhole size={17} /> Original output preserved. Time any further checking or correction before confirming completion.</div>
+                <div className="locked-message"><LockKeyhole size={17} /> Result reference recorded. Continue timing any further checking or corrections, then confirm task completion below.</div>
               )}
               {runState === "reviewed" && (
-                <><div className="locked-message"><ShieldCheck size={17} /> Evidence validated and sealed.</div><button className="secondary-action" onClick={onExportEvidenceBundle}>Export evidence bundle</button></>
+                <><div className="locked-message">{savedMeasurementReady ? <ShieldCheck size={17} /> : <TriangleAlert size={17} />}{savedMeasurementReady ? "Completion record saved. Original output and events preserved." : "Incomplete record saved for reference only. Repeat this measurement before comparing time."}</div>{!savedMeasurementReady && <button className="primary-action" disabled={runPersistenceStatus !== "ready"} onClick={() => onModeChange(mode)}>Prepare new measurement</button>}<button className="secondary-action" onClick={onExportEvidenceBundle}>Export run records</button></>
               )}
             </div>
+            {runState === "ready" && repeatRequired && <div className="review-error" role="status"><TriangleAlert size={15} />Your previous {mode} measurement is incomplete and stays saved in Audit Report. Click Prepare run to set up a new measurement, then start timing before repeating the full task.</div>}
             {runState === "ready" && automationRunBlocked && <div className="review-error"><TriangleAlert size={15} />Verify the automation connection in Automations before starting an automated lane. Human baseline remains available.</div>}
-            {runState === "ready" && <label className="output-reference"><span>Shared completion criteria (required before starting)</span><Input readOnly={Boolean(benchmarkCompletionCriteriaRef(benchmark))} value={completionCriteriaRef} onChange={(event) => onCompletionCriteriaRefChange(event.target.value)} placeholder="Versioned task instructions / completion checklist; identical across lanes" />{benchmark.schema_version === BENCHMARK_PACKAGE_SCHEMA_VERSION && <span>Locked to verified instructions: {benchmark.completion_criteria.instructions_file}. Read this file before starting; completion remains your decision.</span>}</label>}
-            {runState === "running" && <label className="output-reference"><span>Output reference required before submit</span><Input value={reviewOutputRef} onChange={(event) => onReviewOutputRefChange(event.target.value)} placeholder="File, URL, or content-addressed output ID" /></label>}
+            {benchmark.schema_version === BENCHMARK_PACKAGE_SCHEMA_VERSION ? <section className="task-instructions-section" aria-label="Task instructions">
+              <p>The same task instructions apply to manual work and each tool version.</p>
+              <button className="secondary-action" aria-expanded={showTaskInstructions} aria-controls="task-instructions-content" onClick={() => setShowTaskInstructions(value => !value)}><FileText size={15} />{showTaskInstructions ? "Hide task instructions" : "View task instructions"}</button>
+              {showTaskInstructions && <TaskInstructionsReader benchmark={benchmark} files={benchmarkFiles} />}
+              <details className="task-technical-details"><summary>Technical details</summary><p>Instructions fingerprint</p><code>{completionCriteriaRef}</code></details>
+            </section> : runState === "ready" && <label className="output-reference"><span>Shared completion criteria (required before starting)</span><Input value={completionCriteriaRef} onChange={(event) => onCompletionCriteriaRefChange(event.target.value)} placeholder="Versioned task instructions / completion checklist; identical across lanes" /></label>}
+            {runState === "running" && showResultSubmission && <form id="task-result-submission" className="result-submission" onSubmit={event => { event.preventDefault(); if (canSubmitTaskResult(runState, humanActive, reviewOutputRef, runPersistenceStatus === "ready") && !sealing) onComplete(); }}>
+              <h2>Where is your saved task result?</h2>
+              <p id="task-result-instructions">Save your completed task result first, then enter its file path or online link below.</p>
+              <label className="output-reference"><span>Saved result file path or link</span><Input autoFocus aria-label="Saved result file path or link" aria-describedby="task-result-instructions task-result-help" value={reviewOutputRef} onChange={event => onReviewOutputRefChange(event.target.value)} placeholder="Local file path or online link" required /></label>
+              <p id="task-result-help">This records the result’s location; it does not save or upload the file.</p>
+              <details className="task-technical-details"><summary>Why add a result?</summary><p>It links this run’s recorded time to its output. Automation Auditor compares human work time, not the contents or quality of result files.</p></details>
+              {reviewError && <div className="review-error" role="alert">{reviewError}</div>}
+              <div className="console-actions"><button type="button" className="secondary-action" onClick={() => setShowResultSubmission(false)}>Cancel</button><button type="submit" className="primary-action" disabled={!canSubmitTaskResult(runState, humanActive, reviewOutputRef, runPersistenceStatus === "ready") || sealing}>Submit result</button></div>
+            </form>}
           </section>
-
-          {(runState === "running" || runState === "submitted") && events.some((event) => event.metadata.billable_human_active) && (
-            <section className="console-card acceptance-card">
-              <div className="card-title-row"><div><h2>Timing correction</h2><p>Exclude a whole non-task segment only with human confirmation. The original event stays unchanged.</p></div></div>
-              <div className="acceptance-form">
-                <label><span>Non-task segment</span><NativeSelect value={timingTarget} onChange={(event) => setTimingTarget(event.target.value)}><NativeSelectOption value="">Select…</NativeSelectOption>{eligibleTiming.map((event) => <NativeSelectOption key={event.event_id} value={event.event_id}>{event.event_id} · {(event.duration_ms / 1000).toFixed(3)} seconds</NativeSelectOption>)}</NativeSelect></label>
-                <label><span>Timing confirmation by</span><Input value={timingReviewer} onChange={(event) => setTimingReviewer(event.target.value)} placeholder="Operator ID" /></label>
-                <label className="form-wide"><span>Exclusion reason</span><Input value={timingReason} onChange={(event) => setTimingReason(event.target.value)} /></label>
-                <label className="form-wide"><span>Human confirmation reference</span><Input value={timingConfirmation} onChange={(event) => setTimingConfirmation(event.target.value)} placeholder="Saved confirmation record" /></label>
-              </div>
-              {reviewError && <div className="review-error">{reviewError}</div>}
-              <button className="secondary-action" disabled={humanActive || !eligibleTiming.some((event) => event.event_id === timingTarget) || !timingReason.trim() || !timingReviewer.trim() || !timingConfirmation.trim()} onClick={() => onExcludeTiming(timingTarget, timingReason, timingReviewer, timingConfirmation)}>Append timing exclusion</button>
-            </section>
-          )}
 
           {(runState === "submitted" || runState === "reviewed") && (
             <section className="console-card acceptance-card">
-              <div className="card-title-row"><div><h2>Task completion</h2><p>You or your company decide whether the agreed task is finished. Automation Auditor records that decision and the time, without judging individual business conclusions.</p></div><span className="schema-badge">user confirmation</span></div>
+              <div className="card-title-row"><div><h2>Task completion</h2><p>You decide whether the task meets the agreed completion instructions. Save any corrected result separately so the original stays unchanged. Confirm full timing only if all required human work was recorded.</p></div><span className="schema-badge">user confirmation</span></div>
               {runState === "submitted" ? (
                 <>
                   <div className="acceptance-form">
-                    <div className="form-wide locked-output"><span>Locked review output</span><code>{reviewOutputRef}</code></div>
-                    <label><span>Reviewer reference</span><Input value={reviewerRef} onChange={(event) => onReviewerRefChange(event.target.value)} placeholder="Initials or reviewer ID" /></label>
+                    <ResultReferenceField key={runId} value={finalOutputRef || reviewOutputRef} disabled={sealing || runPersistenceStatus !== "ready"} onSave={onSaveResultReference} onDirtyChange={onResultReferenceDirtyChange} />
+                    <label><span>Reviewer reference</span><Input aria-label="Reviewer reference" aria-describedby="reviewer-reference-help" value={reviewerRef} onChange={(event) => onReviewerRefChange(event.target.value)} placeholder="Initials or reviewer ID" /><small id="reviewer-reference-help">Use your initials or a consistent reviewer ID, such as HUMAN-01.</small></label>
                     <label><span>Decision</span><NativeSelect value={acceptanceDecision} onChange={(event) => onAcceptanceDecisionChange(event.target.value as "pass" | "fail" | "")}><NativeSelectOption value="">Select…</NativeSelectOption><NativeSelectOption value="pass">Task completed</NativeSelectOption><NativeSelectOption value="fail">Task not completed</NativeSelectOption></NativeSelect></label>
                     <label className="form-wide"><span>Shared completion criteria reference</span><Input readOnly={Boolean(benchmarkCompletionCriteriaRef(benchmark)) || events.some((event) => event.event_type === "run_started" && Boolean(event.metadata.completion_criteria_ref))} value={completionCriteriaRef} onChange={(event) => onCompletionCriteriaRefChange(event.target.value)} placeholder="Versioned task instructions / completion checklist; identical across lanes" /></label>
-                    <label className="form-wide"><span>Final output reference (optional, if corrected)</span><Input value={finalOutputRef} onChange={(event) => onFinalOutputRefChange(event.target.value)} placeholder="Leave empty to keep the original output" /></label>
                     <label className="form-wide"><span>Decision note {acceptanceDecision === "fail" ? "(required)" : "(optional)"}</span><Input value={decisionNote} onChange={(event) => onDecisionNoteChange(event.target.value)} placeholder="Completion context or reason the task is not finished" /></label>
                   </div>
                   <label className="review-confirmation"><input type="checkbox" checked={reviewConfirmed} onChange={(event) => onReviewConfirmedChange(event.target.checked)} /><span>I am responsible for this completion decision against the shared task criteria; Automation Auditor did not judge the output.</span></label>
-                  <label className="review-confirmation"><input type="checkbox" checked={timingComplete} onChange={(event) => onTimingCompleteChange(event.target.checked)} /><span>All required active work was timed, including operation, export, checking and necessary corrections. Leave unchecked if any time is missing; no savings claim will be made.</span></label>
+                  <label className="review-confirmation"><input type="checkbox" checked={timingComplete} onChange={(event) => onTimingCompleteChange(event.target.checked)} /><span>All required active work was timed, including operation, export, checking and necessary corrections.</span></label>
+                  {(!timingComplete || acceptanceDecision === "fail" || !hasMeasuredHumanTime(events)) && <div className="review-error" role="status"><TriangleAlert size={15} />This is not a complete measurement for comparison. If any required work was not timed, save an incomplete record below and repeat the full task with timing. Only confirm full timing if it is true; do not check the box just to continue.</div>}
                   {reviewError && <div className="review-error"><TriangleAlert size={15} />{reviewError}</div>}
-                  <div className="acceptance-actions"><span>Pause first. Sealing preserves the original output and every event.</span><button className="primary-action" disabled={humanActive || sealing} onClick={onRecordAcceptance}>{sealing ? "Saving evidence…" : "Record completion decision"}</button></div>
+                  <div className="acceptance-actions"><span>Pause first. Saving preserves the original output and every event.</span><button className="primary-action" disabled={!canFinishMeasurement} onClick={() => { if (canFinishMeasurement) onRecordAcceptance(); }}>{sealing ? "Saving evidence…" : "Save completion decision"}</button></div>
+                  {(!timingComplete || acceptanceDecision === "fail" || !hasMeasuredHumanTime(events)) && <div className="console-actions"><button className="secondary-action" disabled={!canArchiveIncomplete} onClick={() => { if (canArchiveIncomplete) onRecordAcceptance(); }}>Save incomplete record</button></div>}
                 </>
               ) : completedRun ? (
-                <div className="metric-grid compact-metrics">
-                  <div className="metric-card"><p>Human-active</p><strong>{hasMeasuredHumanTime(completedRun.events) ? formatDuration(Math.round(completedRun.metrics.human_active_ms / 1000)) : "Not measured"}</strong><small>{hasMeasuredHumanTime(completedRun.events) ? "from billable events" : "functional run only"}</small></div>
+                savedMeasurementReady ? <div className="metric-grid compact-metrics">
+                  <div className="metric-card"><p>Active human work time</p><strong>{hasMeasuredHumanTime(completedRun.events) ? formatDuration(Math.round(completedRun.metrics.human_active_ms / 1000)) : "Not measured"}</strong><small>{hasMeasuredHumanTime(completedRun.events) ? "from recorded active-work events" : "functional run only"}</small></div>
                   <div className="metric-card"><p>Completion</p><strong>{completedRun.metrics.passed ? "Completed" : "Not completed"}</strong><small>User decision; not a quality score</small></div>
                   <div className="metric-card"><p>Timing coverage</p><strong>{completedRun.metrics.timing_complete ? "Confirmed" : "Incomplete / unknown"}</strong><small>No estimated time is added</small></div>
-                </div>
+                </div> : <div className="review-error" role="status"><TriangleAlert size={15} />The task decision and original events are saved, but this is not a comparison result. Click Prepare new measurement above, start timing before the task, and keep timing all active work through saving and checking the result.</div>
               ) : null}
             </section>
           )}
@@ -1644,10 +1758,11 @@ function RunConsole({
         <aside className="run-side-column">
           <section className="console-card benchmark-card">
             <div className="card-title-row compact">
-              <div><p className="field-label">Locked benchmark</p><h2>{benchmark.task_id}</h2></div>
+              <div><p className="field-label">Locked benchmark</p><h2>{benchmark.display_name}</h2></div>
               <LockKeyhole size={17} />
             </div>
             <p className="scenario">{benchmark.description}</p>
+            <details className="task-technical-details"><summary>Task ID</summary><code>{benchmark.task_id}</code></details>
             <div className="mini-stats">
               <div><strong>{benchmark.schema_version === BENCHMARK_PACKAGE_SCHEMA_VERSION ? "User" : benchmark.acceptance.requirement_count}</strong><span>{benchmark.schema_version === BENCHMARK_PACKAGE_SCHEMA_VERSION ? "confirms completion" : "legacy requirements"}</span></div>
               <div><strong>{benchmark.input_files.length}</strong><span>input files</span></div>
@@ -1673,11 +1788,34 @@ function RunConsole({
   );
 }
 
+function TaskInstructionsReader({ benchmark, files }: { benchmark: BenchmarkPackageManifest; files: File[] }) {
+  const [content, setContent] = useState<{ text: string | null; fileName: string; url: string } | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    readTaskInstructions(benchmark, files).then(result => {
+      if (cancelled) return;
+      objectUrl = URL.createObjectURL(result.file);
+      setContent({ text: result.text, fileName: result.file.name, url: objectUrl });
+    }).catch(reason => {
+      if (!cancelled) setError(reason instanceof Error ? reason.message : "Unable to read the task instructions file.");
+    });
+    return () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [benchmark, files]);
+  return <div id="task-instructions-content" className="task-instructions-content">
+    {error ? <p className="review-error" role="alert">{error}</p> : content ? <>
+      <p className="instructions-filename">{content.fileName}</p>
+      {content.text !== null ? <pre>{content.text}</pre> : <p>This file cannot be previewed as text. Download the verified instructions to open them in the appropriate app.</p>}
+      <a className="text-action" href={content.url} download={content.fileName}>Download task instructions <Download size={15} /></a>
+    </> : <p role="status">Loading task instructions…</p>}
+  </div>;
+}
+
 function Automations({
   automation,
   connectivityEvidence,
   draftName,
-  draftTaskKind,
   draftPurpose,
   draftVersionA,
   draftVersionB,
@@ -1690,8 +1828,9 @@ function Automations({
   validationAttempted,
   validationCurrent,
   contractValidated,
+  prepared,
+  locked,
   onNameChange,
-  onTaskKindChange,
   onPurposeChange,
   onVersionAChange,
   onVersionBChange,
@@ -1709,7 +1848,6 @@ function Automations({
   automation: AutomationConnection | null;
   connectivityEvidence: ConnectivityEvidence | null;
   draftName: string;
-  draftTaskKind: string;
   draftPurpose: string;
   draftVersionA: string;
   draftVersionB: string;
@@ -1722,8 +1860,9 @@ function Automations({
   validationAttempted: boolean;
   validationCurrent: boolean;
   contractValidated: boolean;
+  prepared: boolean;
+  locked: boolean;
   onNameChange: (value: string) => void;
-  onTaskKindChange: (value: string) => void;
   onPurposeChange: (value: string) => void;
   onVersionAChange: (value: string) => void;
   onVersionBChange: (value: string) => void;
@@ -1741,19 +1880,21 @@ function Automations({
   const targetLabel = draftAdapter === "guided" ? "Launch URL" : draftAdapter === "events" ? "Event endpoint" : "API endpoint";
   return (
     <div className="page-content">
-      <PageHeading eyebrow="Automation under test" title="Connect before you evaluate" copy="Automation Auditor does not assume what your tool does. Register its versions and choose how runs will be observed before attaching any benchmark." />
+      <PageHeading eyebrow="Automations" title="Set up the automation tool you want to evaluate" copy="Set up the tool you want to evaluate. Enter its versions and choose how you will use it and record your work." />
+      {locked && <p className="workflow-alert">Tool setup is locked while a run is unfinished or local storage is unavailable. Finish and save the current run before changing its tool.</p>}
+      {prepared && <p className="workflow-alert">Tool setup draft saved. Next: import your task in Benchmarks. The final connection will be created only when you confirm the verified task.</p>}
 
       {automation && (
         <>
           <section className="connected-banner">
             <span className="connected-icon"><Check size={17} /></span>
             <div><p className="field-label">Connected automation</p><h2>{automation.name}</h2><p>{automation.manifest.automation.task_kind} · {automation.manifest.manifest_id} · Current: {automation.versionA} · Candidate: {automation.versionB || "not registered"}</p></div>
-            <div className="connected-actions"><span className="connection-status"><StatusDot tone="good" /> Contract valid · connectivity {connectivityEvidence?.outcome.replaceAll("_", " ") ?? automation.manifest.validation.connectivity_status.replaceAll("_", " ")}</span><button className="export-button" onClick={onExport}>Export manifest</button></div>
+            <div className="connected-actions"><span className="connection-status"><StatusDot tone="good" /> Setup checked · access {connectivityEvidence?.outcome.replaceAll("_", " ") ?? automation.manifest.validation.connectivity_status.replaceAll("_", " ")}</span><button className="export-button" onClick={onExport}>Export tool setup</button></div>
           </section>
           <section className={`connectivity-panel connectivity-${connectivityEvidence?.outcome ?? "not-tested"}`}>
-            <div><p className="field-label">Controlled connectivity dry run</p><h3>{connectivityEvidence?.outcome === "verified" ? "Connection verified" : connectivityEvidence?.outcome === "failed" ? "Verification failed" : connectivityEvidence?.outcome === "pending_manual_confirmation" ? automation.adapter === "guided" ? "Waiting for human confirmation" : "Checking endpoint" : "Not tested"}</h3><p>{connectivityEvidence?.note ?? `The ${adapterLabels[automation.adapter]} target has not been exercised. Contract validity alone does not unlock automated runs.`}</p>{connectivityEvidence && <code>{connectivityEvidence.evidence_id}</code>}</div>
+            <div><p className="field-label">Check tool access</p><h3>{connectivityEvidence?.outcome === "verified" ? "Access check passed" : connectivityEvidence?.outcome === "failed" ? "Access check failed" : connectivityEvidence?.outcome === "pending_manual_confirmation" ? automation.adapter === "guided" ? "Waiting for your confirmation" : "Checking endpoint" : "Not tested"}</h3><p>{connectivityEvidence?.note ?? (automation.adapter === "guided" ? "Open the tool and confirm that it opens. This checks access, not whether it can complete the task." : "Check whether the endpoint responds to an unauthenticated HEAD request. This checks access, not whether it can complete the task.")}</p>{connectivityEvidence && <code>{connectivityEvidence.evidence_id}</code>}</div>
             <div className="connectivity-actions">
-              {!connectivityEvidence || connectivityEvidence.outcome !== "pending_manual_confirmation" ? <button className="secondary-action" onClick={onBeginConnectivityDryRun}>{automation.adapter === "guided" ? "Open target for dry run" : "Run unauthenticated HEAD check"}</button> : automation.adapter === "guided" ? <><button className="secondary-action" onClick={() => onResolveGuidedConnectivity(false)}>Record failure</button><button className="primary-action" onClick={() => onResolveGuidedConnectivity(true)}>Confirm target launched</button></> : <button className="secondary-action" disabled>Checking…</button>}
+              {!connectivityEvidence || connectivityEvidence.outcome !== "pending_manual_confirmation" ? <button className="secondary-action" onClick={onBeginConnectivityDryRun}>{automation.adapter === "guided" ? "Open tool to check access" : "Run unauthenticated HEAD check"}</button> : automation.adapter === "guided" ? <><button className="secondary-action" onClick={() => onResolveGuidedConnectivity(false)}>Record failure</button><button className="primary-action" onClick={() => onResolveGuidedConnectivity(true)}>Confirm tool opened</button></> : <button className="secondary-action" disabled>Checking…</button>}
             </div>
           </section>
         </>
@@ -1762,48 +1903,50 @@ function Automations({
       <div className="connection-grid connection-grid-single">
         <section className="connector-form-card">
           <div className="card-title-row">
-            <div><h2>Connection contract</h2><p>Define identity and observation method. No benchmark is selected here.</p></div>
+            <div><h2>Tool setup</h2><p>Enter the tool, versions and how you will use it.</p></div>
             <Link2 size={19} />
           </div>
-          <div className="connector-form">
-            <label><span>Automation name</span><Input value={draftName} onChange={(event) => onNameChange(event.target.value)} placeholder="e.g. Invoice Reconciliation Agent" /></label>
-            <label><span>Task family</span><Input value={draftTaskKind} onChange={(event) => onTaskKindChange(event.target.value)} placeholder="e.g. invoice_reconciliation" /></label>
-            <label className="form-wide"><span>Purpose</span><Input value={draftPurpose} onChange={(event) => onPurposeChange(event.target.value)} placeholder="What repeatable task does this automation perform?" /></label>
-            <label><span>Current version A</span><Input value={draftVersionA} onChange={(event) => onVersionAChange(event.target.value)} placeholder="Commit, release, or version ID" /></label>
-            <label><span>Candidate version B <small>optional for now</small></span><Input value={draftVersionB} onChange={(event) => onVersionBChange(event.target.value)} placeholder="Commit, release, or version ID" /></label>
+          <fieldset className="connector-form" disabled={locked}>
+            <label className="form-wide"><span>{targetLabel}</span><Input aria-label={targetLabel} aria-describedby="target-url-help" type="url" value={draftTargetUrl} onChange={(event) => onTargetUrlChange(event.target.value)} placeholder="https://…" /><small id="target-url-help">{draftAdapter === "guided" ? "Enter the web address you use to open the tool." : "Enter the endpoint address provided by the tool."}</small></label>
+            <label className="form-wide"><span>Automation name</span><Input aria-label="Automation name" aria-describedby="automation-name-help" value={draftName} onChange={(event) => onNameChange(event.target.value)} placeholder="e.g. Invoice Reconciliation Agent" /><small id="automation-name-help">Use the name of the tool you are evaluating.</small></label>
+            <label className="form-wide"><span>Purpose</span><Input aria-label="Purpose" aria-describedby="purpose-help" value={draftPurpose} onChange={(event) => onPurposeChange(event.target.value)} placeholder="What repeatable task does this automation perform?" /><small id="purpose-help">Describe the task this tool helps you complete.</small></label>
+            <label><span>Current version A</span><Input aria-label="Current version A" aria-describedby="version-a-help" value={draftVersionA} onChange={(event) => onVersionAChange(event.target.value)} placeholder="Commit, release, or version ID" /><small id="version-a-help">Enter the exact version you want to test.</small></label>
+            <label><span>Candidate version B <small>optional for now</small></span><Input aria-label="Candidate version B" aria-describedby="version-b-help" value={draftVersionB} onChange={(event) => onVersionBChange(event.target.value)} placeholder="Commit, release, or version ID" /><small id="version-b-help">Enter a second version if you want to compare versions.</small></label>
+            <section className="form-wide connection-settings" aria-label="Advanced Settings"><h3>Advanced Settings</h3><p id="connection-settings-help">If you open the tool yourself, provide files and bring back results, keep the default settings. Developers can configure these options for their existing integration.</p><div className="connection-settings-grid">
             <label><span>Adapter</span>
-              <NativeSelect value={draftAdapter} onChange={(event) => onAdapterChange(event.target.value as AdapterType)}>
-                <NativeSelectOption value="guided">Guided external run</NativeSelectOption>
-                <NativeSelectOption value="events">Event / webhook adapter</NativeSelectOption>
-                <NativeSelectOption value="api">HTTP API adapter</NativeSelectOption>
+              <NativeSelect aria-label="Adapter" aria-describedby="connection-settings-help" value={draftAdapter} onChange={(event) => onAdapterChange(event.target.value as AdapterType)}>
+                <NativeSelectOption value="guided">Guided external run — I use the tool myself</NativeSelectOption>
+                <NativeSelectOption value="events">Event / webhook adapter — developer setup</NativeSelectOption>
+                <NativeSelectOption value="api">HTTP API adapter — developer setup</NativeSelectOption>
               </NativeSelect>
             </label>
-            <label><span>{targetLabel}</span><Input type="url" value={draftTargetUrl} onChange={(event) => onTargetUrlChange(event.target.value)} placeholder="https://…" /></label>
             <label><span>Input transport</span>
-              <NativeSelect value={draftInputTransport} onChange={(event) => onInputTransportChange(event.target.value as InputTransport)}>
-                <NativeSelectOption value="manual_files">Manual files</NativeSelectOption>
-                <NativeSelectOption value="json_http">JSON over HTTP</NativeSelectOption>
-                <NativeSelectOption value="shared_reference">Shared object reference</NativeSelectOption>
+              <NativeSelect aria-label="Input transport" aria-describedby="connection-settings-help" value={draftInputTransport} onChange={(event) => onInputTransportChange(event.target.value as InputTransport)}>
+                <NativeSelectOption value="manual_files">Manual files — I provide the files</NativeSelectOption>
+                <NativeSelectOption value="json_http">JSON over HTTP — developer interface</NativeSelectOption>
+                <NativeSelectOption value="shared_reference">Shared object reference — developer reference</NativeSelectOption>
               </NativeSelect>
             </label>
             <label><span>Output transport</span>
-              <NativeSelect value={draftOutputTransport} onChange={(event) => onOutputTransportChange(event.target.value as OutputTransport)}>
-                <NativeSelectOption value="manual_import">Manual result import</NativeSelectOption>
-                <NativeSelectOption value="json_http">JSON over HTTP</NativeSelectOption>
-                <NativeSelectOption value="event_stream">Event stream</NativeSelectOption>
+              <NativeSelect aria-label="Output transport" aria-describedby="connection-settings-help" value={draftOutputTransport} onChange={(event) => onOutputTransportChange(event.target.value as OutputTransport)}>
+                <NativeSelectOption value="manual_import">Manual result import — I bring back results</NativeSelectOption>
+                <NativeSelectOption value="json_http">JSON over HTTP — developer interface</NativeSelectOption>
+                <NativeSelectOption value="event_stream">Event stream — developer event feed</NativeSelectOption>
               </NativeSelect>
             </label>
             <label><span>Event source</span>
-              <NativeSelect value={draftEventSource} onChange={(event) => onEventSourceChange(event.target.value as EventSource)}>
-                <NativeSelectOption value="run_console">Run Console instrumentation</NativeSelectOption>
-                <NativeSelectOption value="webhook">Automation webhook</NativeSelectOption>
-                <NativeSelectOption value="api_response">API response lifecycle</NativeSelectOption>
+              <NativeSelect aria-label="Event source" aria-describedby="connection-settings-help" value={draftEventSource} onChange={(event) => onEventSourceChange(event.target.value as EventSource)}>
+                <NativeSelectOption value="run_console">Run Console instrumentation — I record work here</NativeSelectOption>
+                <NativeSelectOption value="webhook">Automation webhook — developer event sender</NativeSelectOption>
+                <NativeSelectOption value="api_response">API response lifecycle — developer API records</NativeSelectOption>
               </NativeSelect>
             </label>
-          </div>
+            </div></section>
+          </fieldset>
 
           <section className="contract-check-panel">
-            <div className="contract-check-heading"><div><p className="field-label">Manifest validation</p><h3>{!validationAttempted ? "Not checked" : !validationCurrent ? "Draft changed — run again" : contractValidated ? "Contract valid" : "Needs attention"}</h3></div><span>Structural check only · no external request</span></div>
+            <div className="contract-check-heading"><div><p className="field-label">Settings check</p><h3>{!validationAttempted ? "Not checked" : !validationCurrent ? "Settings changed — check again" : contractValidated ? "Setup checked" : "Needs attention"}</h3></div><div className="setup-check-actions"><button className={validationCurrent && contractValidated ? "secondary-action" : "primary-action"} disabled={locked} onClick={onValidate}>Check setup</button><button className={validationCurrent && contractValidated ? "primary-action" : "secondary-action"} disabled={!validationCurrent || !contractValidated || locked} onClick={onConnect}>Save and continue to Benchmarks <ArrowRight size={16} /></button></div></div>
+            <p className="setup-check-note">Checks the settings you entered. The tool is not contacted.</p>
             <div className="contract-checks">
               {contractChecks.map((check) => {
                 const state = !validationCurrent ? "pending" : check.passed ? "passed" : "failed";
@@ -1813,8 +1956,7 @@ function Automations({
           </section>
 
           <div className="connector-actions">
-            <span>Credentials are never stored in this manifest. Real connectivity remains unverified until a controlled dry run.</span>
-            <div><button className="secondary-action" onClick={onValidate}>Run contract check</button><button className="primary-action" disabled={!contractValidated} onClick={onConnect}>Save manifest <ArrowRight size={16} /></button></div>
+            <span>Passwords and API keys are not stored in this tool setup. Check tool access separately before an automated run.</span>
           </div>
         </section>
 
@@ -1826,14 +1968,14 @@ function Automations({
 function SetupRequired({ automationConnected, onConnect, onBenchmark }: { automationConnected: boolean; onConnect: () => void; onBenchmark: () => void }) {
   return (
     <div className="page-content">
-      <PageHeading eyebrow="Run prerequisites" title="Complete setup before recording" copy="A run is valid only when an automation connection and a versioned benchmark are explicitly attached." />
+      <PageHeading eyebrow="Run Console" title="Complete setup before recording" copy="Record the time you spend doing the task. First, set up your tool and select the task files and completion instructions." />
       <section className="setup-steps">
         <div className={automationConnected ? "setup-step done" : "setup-step active"}>
-          <span>01</span><div><h2>Connect an automation</h2><p>Register version identity and the adapter used to observe it.</p></div>
+          <span>01</span><div><h2>Set up your tool</h2><p>Enter its versions and how you will use it.</p></div>
           <button className="secondary-action" onClick={onConnect}>{automationConnected ? "Review" : "Connect"}</button>
         </div>
         <div className={!automationConnected ? "setup-step locked" : "setup-step active"}>
-          <span>02</span><div><h2>Attach a benchmark</h2><p>Choose versioned inputs, rubric, and sealed reference answers.</p></div>
+          <span>02</span><div><h2>Select your task</h2><p>Choose the task files and agreed completion instructions.</p></div>
           <button className="secondary-action" disabled={!automationConnected} onClick={onBenchmark}>Choose benchmark</button>
         </div>
       </section>
@@ -1843,46 +1985,75 @@ function SetupRequired({ automationConnected, onConnect, onBenchmark }: { automa
 
 function Benchmarks({
   automation,
+  preparedSetup,
+  setupCurrent,
+  busy,
   imported,
   attached,
   onImport,
+  onPrepare,
   onAttach,
 }: {
   automation: AutomationConnection | null;
+  preparedSetup: ConnectionDraft | null;
+  setupCurrent: boolean;
+  busy: boolean;
   imported: BenchmarkImportResult;
   attached: BenchmarkPackageManifest | null;
   onImport: (files: File[]) => void;
+  onPrepare: (name: string, instructions: string) => void;
   onAttach: () => void;
 }) {
+  const [taskName, setTaskName] = useState("");
+  const [taskWork, setTaskWork] = useState("");
+  const [taskDeliverable, setTaskDeliverable] = useState("");
+  const [taskCompletion, setTaskCompletion] = useState("");
+  const taskInstructions = composeTaskInstructions({ work: taskWork, deliverable: taskDeliverable, completion: taskCompletion });
   const manifest = imported.manifest;
-  const compatible = Boolean(automation && manifest && automation.manifest.automation.task_kind === manifest.task_kind);
+  const compatible = Boolean(manifest && (preparedSetup ? setupCurrent : automation && automation.manifest.automation.task_kind === manifest.task_kind));
   const ready = imported.status === "ready" && Boolean(manifest);
   return (
     <div className="page-content">
-      <PageHeading eyebrow="Benchmark workspace" title="Import an evaluation package" copy="Automation Auditor ships with no benchmark. Select one package manifest and every input file from your local disk; inventory, size, SHA-256, and task-family compatibility are checked before attachment." />
+      <PageHeading eyebrow="Benchmarks" title="Import your task files" copy="Import your task files. Include a task package JSON if you have one; otherwise, describe your task below." />
+      {preparedSetup && <p className="workflow-alert">Prepared tool: {preparedSetup.name} · {preparedSetup.versionA}. Confirm the prepared task below to create the final connection. {automation && "Your saved connection is unchanged until that confirmation; historical evidence is preserved."}</p>}
+      {!setupCurrent && <p className="review-error">Tool settings changed after the draft was saved. Return to Automations, check and save them before connecting this task.</p>}
 
       <section className="benchmark-import-card">
         <div className="import-dropzone">
           <div className="document-mark"><BookOpenCheck size={23} /></div>
-          <div><h2>Select package files</h2><p>Choose exactly one manifest JSON plus all files listed by that manifest. After verification, files are stored only in this browser&apos;s device-local database and are never uploaded to a server.</p></div>
-          <label className="primary-action file-picker">Choose files<Input aria-label="Choose benchmark package files" type="file" multiple onChange={(event) => { void onImport(Array.from(event.target.files ?? [])); }} /></label>
+          <div><h2>Select task files</h2><p>Task files stay in this browser on this device. If you later request AI analysis, run records are sent to Nebius Token Factory.</p></div>
+          <label className="primary-action file-picker">Choose files<Input aria-label="Choose task files" type="file" multiple disabled={busy || imported.status === "validating"} onChange={(event) => { const files = Array.from(event.target.files ?? []); if (files.length) { setTaskName(""); setTaskWork(""); setTaskDeliverable(""); setTaskCompletion(""); void onImport(files); } event.target.value = ""; }} /></label>
         </div>
         <div className={`import-status import-status-${imported.status}`}>
           <StatusDot tone={imported.status === "ready" ? "good" : imported.status === "validating" ? "warn" : "idle"} />
-          <div><strong>{imported.status === "idle" ? "No package selected" : imported.status === "validating" ? "Checking package…" : imported.status === "ready" ? "Package integrity verified" : "Package rejected"}</strong><span>{imported.status === "idle" ? "Nothing is bundled or preselected." : `${imported.imported_file_count} local files selected`}</span></div>
+          <div><strong>{imported.status === "idle" ? "No task files selected" : imported.status === "validating" ? "Preparing task…" : imported.status === "needs_setup" ? "Files selected — describe your task" : imported.status === "ready" ? "Task files ready" : "Task could not be prepared"}</strong><span>{imported.status === "idle" ? "Select your task materials to continue." : `${imported.imported_file_count} local files${imported.status === "ready" ? " stored for this task" : " selected"}`}</span></div>
         </div>
         {imported.errors.length > 0 && <div className="import-errors">{imported.errors.map((error) => <div key={error}><TriangleAlert size={14} />{error}</div>)}</div>}
       </section>
+
+      {imported.status === "needs_setup" && <section className="benchmark-detail-card local-task-setup">
+        <h2>Describe your task</h2>
+        <p>Answer all three questions. Use the same requirements for manual work and each tool version.</p>
+        <fieldset className="connector-form" disabled={busy}>
+          <label className="form-wide"><span>Task name</span><Input aria-label="Task name" value={taskName} onChange={event => setTaskName(event.target.value)} placeholder="e.g. Review supplier onboarding materials" /></label>
+          <label className="form-wide"><span>1. What should be done?</span><textarea aria-label="What should be done?" value={taskWork} onChange={event => setTaskWork(event.target.value)} rows={3} placeholder="e.g. Check the selected files against the task checklist." /></label>
+          <label className="form-wide"><span>2. What should be delivered?</span><textarea aria-label="What should be delivered?" value={taskDeliverable} onChange={event => setTaskDeliverable(event.target.value)} rows={3} placeholder="e.g. A saved report with a result for each item and reasons for any issues." /></label>
+          <label className="form-wide"><span>3. When is the task complete?</span><textarea aria-label="When is the task complete?" value={taskCompletion} onChange={event => setTaskCompletion(event.target.value)} rows={3} placeholder="e.g. I have checked the result, made any necessary corrections and saved it for use." /></label>
+        </fieldset>
+        <div className="file-grid">{imported.selected_files.map((file, index) => <div className="file-item" key={`${file.name}-${index}`}><FileText size={16} /><span>{file.name}</span></div>)}</div>
+        <button className="primary-action" disabled={busy || !taskName.trim() || taskInstructions === null} onClick={() => { if (taskInstructions !== null) onPrepare(taskName, taskInstructions); }}>Prepare task <ArrowRight size={16} /></button>
+        <p className="task-record-note">You decide when the task is complete. These requirements are fixed for this comparison; changed requirements need a new task.</p>
+      </section>}
 
       {manifest && (
         <section className="benchmark-detail-card">
           <div className="benchmark-summary">
             <div className="document-mark"><BookOpenCheck size={23} /></div>
-            <div><span className="protocol-badge"><LockKeyhole size={12} /> Imported & verified</span><h2>{manifest.display_name}</h2><p>{manifest.task_kind} · {manifest.benchmark_id}</p></div>
-            <button className="primary-action" disabled={!ready || !compatible || Boolean(attached)} onClick={onAttach}>{attached ? "Attached" : !automation ? "Connect automation first" : !compatible ? "Incompatible task family" : `Attach to ${automation.name}`} {!attached && compatible && <ArrowRight size={16} />}</button>
+            <div><span className="protocol-badge"><LockKeyhole size={12} /> {ready ? "Task prepared & files checked" : "Task needs attention"}</span><h2>{manifest.display_name}</h2><p>{manifest.description}</p><p>{manifest.task_kind} · {manifest.benchmark_id}</p></div>
+            <button className="primary-action" disabled={!ready || !compatible || Boolean(attached) || busy} onClick={onAttach}>{attached ? "Task connected" : preparedSetup ? `Confirm task connection with ${preparedSetup.name}` : !automation ? "Save tool setup in Automations first" : !compatible ? "Incompatible task family" : `Use this task with ${automation.name}`} {!attached && compatible && <ArrowRight size={16} />}</button>
           </div>
           <div className="benchmark-facts"><div><span>Task version</span><strong>{manifest.task_version}</strong></div><div><span>Review as of</span><strong>{manifest.review_as_of}</strong></div><div><span>Completion basis</span><strong>{manifest.schema_version === BENCHMARK_PACKAGE_SCHEMA_VERSION ? "User confirmation · no answer key" : "Legacy v0.1 · no business scoring"}</strong></div><div><span>{manifest.schema_version === BENCHMARK_PACKAGE_SCHEMA_VERSION ? "Verified task instructions" : "Legacy rubric"}</span><strong>{manifest.schema_version === BENCHMARK_PACKAGE_SCHEMA_VERSION ? manifest.completion_criteria.instructions_file : `${manifest.acceptance.requirement_count} recorded requirements`}</strong></div></div>
-          {!compatible && automation && <div className="compatibility-warning"><TriangleAlert size={16} /><span>Task family mismatch: automation is <code>{automation.manifest.automation.task_kind}</code>; benchmark is <code>{manifest.task_kind}</code>.</span></div>}
+          {!compatible && automation && !preparedSetup && <div className="compatibility-warning"><TriangleAlert size={16} /><span>Task family mismatch: automation is <code>{automation.manifest.automation.task_kind}</code>; benchmark is <code>{manifest.task_kind}</code>. To change the task contract, explicitly save a new tool setup in Automations and confirm this package.</span></div>}
           <div className="file-grid">
             {imported.file_checks.map((file) => <div className={`file-item file-${file.status}`} key={file.path}><FileText size={16} /><span>{file.path}</span>{file.status === "valid" ? <Check size={15} /> : <TriangleAlert size={15} />}</div>)}
           </div>
@@ -1892,47 +2063,41 @@ function Benchmarks({
   );
 }
 
-function Compare({ automation, completedRuns }: { automation: AutomationConnection | null; completedRuns: CompletedRun[] }) {
-  const completionRuns = completedRuns.filter((run) => run.metrics.evidence_standard === "user_completion" && (!automation || run.manifest.automation_id === automation.manifest.automation.automation_id));
-  return <div className="page-content"><PageHeading eyebrow="Deterministic timing" title="Human / A / B time comparison" copy="Same inputs and shared completion criteria. Completion is confirmed by the user; output quality is not scored here." /><TimeComparisonReport completedRuns={completionRuns} />{completedRuns.length > completionRuns.length && <p>Older quality-review bundles and records for other tools remain available in Audit Report. They are not converted into completion or timing evidence.</p>}</div>;
+function Compare({ automation, completedRuns, task, onNavigate }: { automation: AutomationConnection | null; completedRuns: CompletedRun[]; task: BenchmarkPackageManifest | null; onNavigate: (page: NavKey) => void }) {
+  const completionRuns = completedRuns.filter((run) => run.metrics.evidence_standard === "user_completion" && isRunInComparisonToolScope(run, automation?.manifest.automation.automation_id));
+  return <div className="page-content"><PageHeading eyebrow="Compare" title="Human / A / B time comparison" copy="Compare human work on the same task. Use the same inputs and completion instructions for manual work and each automation version; you confirm when the task is complete." /><TimeComparisonReport completedRuns={completionRuns} automationId={automation?.manifest.automation.automation_id} toolName={automation?.name} task={task ?? undefined} onResolveMissing={() => onNavigate("run")} />{completedRuns.length > completionRuns.length && <p>Older quality-review bundles and records for other tools remain available in Audit Report. They are not converted into completion or timing evidence.</p>}</div>;
 }
 
-function TimeComparisonReport({ completedRuns }: { completedRuns: CompletedRun[] }) {
-  const latest = new Map<AuditEvent["mode"], CompletedRun>();
-  for (const run of [...completedRuns].sort((a, b) => b.manifest.completed_at.localeCompare(a.manifest.completed_at))) if (!latest.has(run.manifest.mode)) latest.set(run.manifest.mode, run);
-  const baseline = latest.get("human_baseline");
-  const comparisons: TimeComparison[] = [];
-  const messages: string[] = [];
-  for (const lane of ["automation_version_a", "automation_version_b"] as const) {
-    const run = latest.get(lane);
-    if (!baseline || !run) {
-      messages.push(`${lane}: a user-confirmed Human baseline and automation run are required.`);
-      continue;
-    }
-    try { comparisons.push(calculateTimeComparison(baseline, run)); }
-    catch (error) { messages.push(`${lane}: ${error instanceof Error ? error.message : "Comparison unavailable"}`); }
-  }
+function TimeComparisonReport({ completedRuns, automationId, toolName, task, onResolveMissing }: { completedRuns: CompletedRun[]; automationId?: string; toolName?: string; task?: BenchmarkPackageManifest; onResolveMissing?: () => void }) {
+  const { latest, comparisons, messages } = inspectWorkflowComparisons(completedRuns, automationId, task);
+  if (!latest.has("human_baseline")) messages.push("To measure savings against manual work, record or import a Human baseline for this task. A/B records alone only show the two versions' recorded times.");
+  if (!latest.has("automation_version_a") && !latest.has("automation_version_b")) messages.push("Record or import an automation run on the same task to create a comparison.");
   const exportReport = () => {
+    if (comparisons.length === 0) return;
     const payload = { report_version: "time-report-v0.1", comparisons, incomplete: messages, evidence_run_ids: [...latest.values()].map((run) => run.manifest.run_id), limitation: "User-confirmed controlled task. No independent quality score, production-safety assessment or enterprise ROI claim." };
     const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
     const link = document.createElement("a"); link.href = url; link.download = "automation-auditor-time-report.v0.1.json"; link.click(); URL.revokeObjectURL(url);
   };
   return <section className="console-card">
-    <div className="card-title-row"><div><h2>Human effort report</h2><p>Only completed tasks with confirmed full timing can produce a time comparison. A-only comparisons are provisional until B is available.</p></div><button className="secondary-action" onClick={exportReport}>Export time report</button></div>
+    <div className="card-title-row"><div><h2>{comparisons.length ? "Time comparison results" : "Comparison not ready"}</h2><p>Compare a completed Human baseline with version A or B, using confirmed full timing. A second automation version is optional.</p></div><button className="secondary-action" disabled={comparisons.length === 0} onClick={exportReport}>Export time report</button></div>
+    {comparisons.length === 0 && <p className="review-error" role="status">No complete comparable measurement is available. Follow the instructions below in Run Console; incomplete records are retained for reference, not presented as results.</p>}
     <div className="comparison-table">
       <div className="comparison-row table-head"><span>Lane</span><span>Recorded active time</span><span>User completion</span><span>Timing coverage</span><span>Status</span></div>
       {modes.map((label) => {
         const run = latest.get(modeIds[label]);
-        return <div className="comparison-row" key={label}><strong>{label}</strong><span>{run ? hasMeasuredHumanTime(run.events) ? formatDuration(Math.round(run.metrics.human_active_ms / 1000)) : "Not measured" : "—"}</span><span>{run ? run.metrics.passed ? "Completed" : "Not completed" : "—"}</span><span>{run ? run.metrics.timing_complete ? "Confirmed" : "Incomplete / unknown" : "—"}</span><span>{run ? "User-confirmed record" : "Not recorded"}</span></div>;
+        const metrics = run ? calculateRunMetrics(run.events) : null;
+        return <div className="comparison-row" key={label}><strong>{label}</strong><span>{run && metrics ? measurementReady(metrics) ? formatDuration(Math.round(metrics.human_active_ms / 1000)) : "Incomplete measurement" : "—"}</span><span>{metrics ? metrics.passed ? "Completed" : "Not completed" : "—"}</span><span>{metrics ? metrics.timing_complete ? "Confirmed" : "Incomplete / unknown" : "—"}</span><span>{metrics ? measurementReady(metrics) ? "User-confirmed record" : "Repeat required" : label === "Human" ? "No complete active-time record imported" : "Not recorded"}</span></div>;
       })}
     </div>
-    {comparisons.map((result) => <div className="gate-banner" key={result.automation_run_id}><Clock3 size={20} /><div><strong>{result.automation_run_id}: {result.observed_time_reduction ? "less human-active time observed" : "no human-active time reduction observed"}</strong><p>Baseline minus automation: {(result.human_active_delta_ms / 1000).toFixed(3)} seconds ({result.relative_improvement_pct?.toFixed(1) ?? "N/A"}%).</p><p>{result.limitation}</p></div></div>)}
+    {comparisons.map((result) => <BenchmarkCertificateResult key={result.automation_run_id} result={result} baseline={completedRuns.find(run => run.manifest.run_id === result.baseline_run_id)} automation={completedRuns.find(run => run.manifest.run_id === result.automation_run_id)} context={{ ...(automationId && toolName ? { tool: { id: automationId, name: toolName } } : {}), ...(task ? { task: { id: task.task_id, version: task.task_version, name: task.display_name } } : {}) }} />)}
     {messages.map((message) => <p className="review-error" key={message}>{message}</p>)}
+    {comparisons.length === 0 && onResolveMissing && <button className="secondary-action" onClick={onResolveMissing}>Return to Run Console</button>}
   </section>;
 }
 
 function Report({
   automation,
+  task,
   completedRuns,
   analystState,
   analystEnvelope,
@@ -1944,6 +2109,7 @@ function Report({
   onClearLocalEvidence,
 }: {
   automation: AutomationConnection | null;
+  task: BenchmarkPackageManifest | null;
   completedRuns: CompletedRun[];
   analystState: "idle" | "loading" | "succeeded" | "unavailable" | "failed";
   analystEnvelope: AiAnalystEnvelope | null;
@@ -1959,21 +2125,21 @@ function Report({
   const callEvidence = analystEnvelope?.call_evidence;
   return (
     <div className="page-content">
-      <PageHeading eyebrow="Audit report" title="Evidence chain" copy="Every claim in the final report must resolve to a run, event, source reference, or acceptance decision." />
-      <section className="console-card"><h2>Import completion evidence</h2><p>Import an exported user-completion bundle from another workspace. Event timing is recalculated; duplicate or active run IDs cannot be overwritten. Referenced business files are not validated by this import.</p><Input type="file" accept=".json,application/json" aria-label="Import completion evidence bundle" onChange={(event) => { const file = event.target.files?.[0]; if (file) void onImportCompletionEvidence(file); event.target.value = ""; }} />{evidenceImportNotice && <p role="status">{evidenceImportNotice}</p>}</section>
-      <TimeComparisonReport completedRuns={completedRuns.filter((run) => run.metrics.evidence_standard === "user_completion" && (!automation || run.manifest.automation_id === automation.manifest.automation.automation_id))} />
+      <PageHeading eyebrow="Audit Report" title="Records behind the results" copy="Review and export the records behind the results. Each result links to recorded work and your completion decision." />
+      <section className="console-card"><h2>Import saved run records</h2><p>Import a run record exported from another workspace. Time is recalculated from the recorded events. Existing or active run IDs cannot be overwritten. This import does not check the business files referenced in the record.</p><Input type="file" accept=".json,application/json" aria-label="Import saved run records" onChange={(event) => { const file = event.target.files?.[0]; if (file) void onImportCompletionEvidence(file); event.target.value = ""; }} />{evidenceImportNotice && <p role="status">{evidenceImportNotice}</p>}</section>
+      <TimeComparisonReport completedRuns={completedRuns.filter((run) => run.metrics.evidence_standard === "user_completion" && isRunInComparisonToolScope(run, automation?.manifest.automation.automation_id))} automationId={automation?.manifest.automation.automation_id} toolName={automation?.name} task={task ?? undefined} />
       <section className="report-empty">
         <div className="report-icon"><FileCheck2 size={26} /></div>
-        <h2>Saved evidence bundles</h2>
-        <p>{automation ? `${automation.name} is connected and ${completedRuns.length} reviewed evidence bundle${completedRuns.length === 1 ? " is" : "s are"} available in this session.` : "No automation is connected. Automation Auditor will not assume a target or manufacture missing evidence."}</p>
+        <h2>Saved run records</h2>
+        <p>{automation ? `${automation.name}: ${completedRuns.length} reviewed run record${completedRuns.length === 1 ? " is" : "s are"} available.` : "Set up a tool to record new work, or import saved run records to review previous results."}</p>
         <div className="report-requirements"><span>{automation ? <Check size={14} /> : <CircleDashed size={14} />} Automation connection</span><span>{completedRuns.length ? <Check size={14} /> : <CircleDashed size={14} />} Saved evidence bundles: {completedRuns.length}</span><span><CircleDashed size={14} /> Comparable Human and Version A runs</span><span><CircleDashed size={14} /> Version B comparison when available</span></div>
         {completedRuns.length > 0 && <div className="evidence-history" aria-label="Reviewed evidence history">
           {completedRuns.map((run) => <div className="evidence-history-item" key={run.manifest.run_id}>
             <div className="evidence-history-row">
               <span><strong>{run.manifest.run_id}</strong><small>{run.metrics.evidence_standard === "user_completion" ? `${run.metrics.passed ? "Completed" : "Not completed"} · user decision · timing ${run.metrics.timing_complete ? "confirmed" : "incomplete / unknown"}` : `Legacy quality review · ${run.metrics.passed ? "Passed" : "Failed"}`}</small></span>
-              <button className="secondary-action" onClick={() => onExportEvidenceBundle(run.manifest.run_id)}>Export bundle</button>
+              <button className="secondary-action" onClick={() => onExportEvidenceBundle(run.manifest.run_id)}>Export run records</button>
             </div>
-            <details><summary>Inspect bundle JSON</summary><pre>{JSON.stringify({ bundle_version: "evidence-bundle-v0.1", ...run }, null, 2)}</pre></details>
+            <details><summary>Technical details (JSON)</summary><pre>{JSON.stringify({ bundle_version: "evidence-bundle-v0.1", ...run }, null, 2)}</pre></details>
           </div>)}
         </div>}
         {completedRuns.length > 0 && <AlertDialog><AlertDialogTrigger asChild><button className="danger-text-action">Clear device-local history</button></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Clear local evidence history?</AlertDialogTitle><AlertDialogDescription>This removes {completedRuns.length} completed evidence bundle{completedRuns.length === 1 ? "" : "s"} from this browser. Export anything you need first. This cannot be undone.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={onClearLocalEvidence}>Clear history</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}
@@ -1982,18 +2148,17 @@ function Report({
       <section className={`analyst-card analyst-${analystState}`}>
         <div className="analyst-heading">
           <div className="analyst-mark"><Sparkles size={21} /></div>
-          <div>
-            <p className="field-label">Required NVIDIA model path</p>
+          <div className="analyst-intro">
+            <p className="field-label">AI explanations</p>
             <h2>Nebius Evidence Analyst</h2>
-            <p>NVIDIA Nemotron on Nebius Token Factory explains reviewed evidence. Deterministic metrics and release decisions remain locked.</p>
+            <p>NVIDIA Nemotron on Nebius Token Factory explains recorded work and suggests what to investigate next. Code calculates time; you decide whether the task is complete.</p>
           </div>
+            <span className="protocol-badge"><StatusDot tone={analystState === "succeeded" ? "good" : analystState === "loading" ? "warn" : "idle"} /> {analystState === "succeeded" ? "AI response checked" : analystState === "loading" ? "Calling Token Factory" : analystState === "unavailable" ? "Analysis unavailable" : analystState === "failed" ? "Call failed" : "Not yet run"}</span>
+        </div>
           <div className="analyst-actions">
-            <span className="protocol-badge"><StatusDot tone={analystState === "succeeded" ? "good" : analystState === "loading" ? "warn" : "idle"} /> {analystState === "succeeded" ? "Verified model output" : analystState === "loading" ? "Calling Token Factory" : analystState === "unavailable" ? "Analysis unavailable" : analystState === "failed" ? "Call failed" : "Not yet run"}</span>
-            <label>Reviewer access code<Input type="password" aria-label="Reviewer access code" autoComplete="off" maxLength={256} value={reviewerAccessCode} onChange={(event) => setReviewerAccessCode(event.target.value)} /></label>
-            <small>Memory only; not your Nebius API key. A hosted analyst requires reviewer access.</small>
+            <label className="analyst-access"><span>AI analysis access code</span><Input type="password" aria-label="AI analysis access code" aria-describedby="analyst-access-help" autoComplete="off" maxLength={256} value={reviewerAccessCode} onChange={(event) => setReviewerAccessCode(event.target.value)} /><small id="analyst-access-help">Provided by your administrator; not your Nebius API key. You can use timing, comparisons and report exports without a code. The code is held in memory only.</small></label>
             <button className="primary-action" disabled={completedRuns.length < 1 || analystState === "loading"} onClick={() => onRunAiAnalysis(reviewerAccessCode)}>{analystState === "loading" ? "Analyzing…" : analystState === "succeeded" ? "Run again" : "Analyze evidence"}</button>
           </div>
-        </div>
 
         {completedRuns.length < 1 && <div className="analyst-empty"><CircleDashed size={18} /><span>Complete at least one human-reviewed run before sending evidence to the model.</span></div>}
 

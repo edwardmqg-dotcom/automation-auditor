@@ -86,6 +86,38 @@ function isTaskKind(value: string) {
   return /^[a-z0-9][a-z0-9_-]*$/.test(value);
 }
 
+// A prepared setup is not a connection manifest. Task identity is supplied only
+// by a verified package when the user explicitly connects that task.
+export function inspectToolSetupDraft(draft: ConnectionDraft): ContractCheck[] {
+  return inspectConnectionDraft(draft).map((check) => check.id === "identity" ? {
+    ...check,
+    passed: Boolean(draft.name.trim() && draft.purpose.trim()),
+    detail: draft.name.trim() && draft.purpose.trim() ? "Tool identity declared; task type will be read from your task package" : "Tool name and purpose are required",
+  } : check);
+}
+
+export function bindToolSetupToTask(draft: ConnectionDraft, taskKind: string): ConnectionDraft {
+  if (!isTaskKind(taskKind)) throw new Error("The verified package must supply a valid task type ID.");
+  const bound = { ...draft, taskKind };
+  if (!inspectConnectionDraft(bound).every((check) => check.passed)) throw new Error("Complete the tool setup before connecting this task.");
+  return bound;
+}
+
+export function toolSetupSignature(draft: ConnectionDraft): string {
+  return JSON.stringify({ ...draft, taskKind: "" });
+}
+
+export function inspectStoredToolSetup(value: unknown): ConnectionDraft {
+  if (typeof value !== "object" || value === null) throw new Error("Saved tool setup is invalid.");
+  const candidate = value as Record<string, unknown>;
+  const fields = ["name", "taskKind", "purpose", "versionA", "versionB", "adapter", "targetUrl", "inputTransport", "outputTransport", "eventSource"] as const;
+  if (Object.keys(candidate).some((key) => !fields.includes(key as typeof fields[number])) || fields.some((key) => typeof candidate[key] !== "string")) throw new Error("Saved tool setup has unsupported fields.");
+  if (!["guided", "events", "api"].includes(candidate.adapter as string) || !["manual_files", "json_http", "shared_reference"].includes(candidate.inputTransport as string) || !["manual_import", "json_http", "event_stream"].includes(candidate.outputTransport as string) || !["run_console", "webhook", "api_response"].includes(candidate.eventSource as string)) throw new Error("Saved tool setup has unsupported integration settings.");
+  const draft = candidate as ConnectionDraft;
+  if (!inspectToolSetupDraft(draft).every((check) => check.passed)) throw new Error("Saved tool setup does not pass the settings checks.");
+  return draft;
+}
+
 export function inspectConnectionDraft(draft: ConnectionDraft): ContractCheck[] {
   const labels: Record<AdapterType, string> = {
     guided: "launch URL",
