@@ -1,5 +1,6 @@
 import { ACTIVE_WORKSPACE_ID, buildWorkspaceSnapshot, inspectWorkspaceSnapshot, type LocalWorkspaceSnapshot, type StoredAutomationConnection } from "./workspace-snapshot.mjs";
 import { inspectStoredToolSetup, type ConnectionDraft } from "./automation-connection";
+import { inspectTaskInputDraft, type TaskInputDraft } from "./task-input-draft";
 
 const DATABASE_NAME = "automation-auditor-local-workspace-v0.1";
 const STORE_NAME = "workspace_snapshots";
@@ -42,6 +43,33 @@ export async function loadToolSetupDraft(): Promise<ConnectionDraft | null> {
       request.onerror = () => reject(request.error ?? new Error("Tool setup could not be restored."));
     });
     return value === null ? null : inspectStoredToolSetup(value);
+  } finally { database.close(); }
+}
+
+// Reuse the existing v2 draft store; never migrate or rewrite workspace/run data.
+export async function saveTaskInputDraft(draft: TaskInputDraft) {
+  const checked = inspectTaskInputDraft(draft);
+  const database = await openDatabase();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = database.transaction(SETUP_STORE_NAME, "readwrite");
+      tx.objectStore(SETUP_STORE_NAME).put(checked, "task-input-v1");
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error("Task description could not be saved."));
+      tx.onabort = () => reject(tx.error ?? new Error("Task description save was interrupted."));
+    });
+  } finally { database.close(); }
+}
+
+export async function loadTaskInputDraft(): Promise<TaskInputDraft | null> {
+  const database = await openDatabase();
+  try {
+    const value = await new Promise<unknown>((resolve, reject) => {
+      const request = database.transaction(SETUP_STORE_NAME, "readonly").objectStore(SETUP_STORE_NAME).get("task-input-v1");
+      request.onsuccess = () => resolve(request.result ?? null);
+      request.onerror = () => reject(request.error ?? new Error("Task description could not be restored."));
+    });
+    return value === null ? null : inspectTaskInputDraft(value);
   } finally { database.close(); }
 }
 

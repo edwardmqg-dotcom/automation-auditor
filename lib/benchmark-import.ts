@@ -72,7 +72,34 @@ export type BenchmarkImportResult = {
   file_checks: ImportedFileCheck[];
   imported_file_count: number;
   selected_files: File[];
+  failure?: { stage: "reading" | "fingerprint" | "preparation"; file_name: string | null; exception_name: string };
 };
+
+// Keep the button and handler aligned; invalid selections need a new selection.
+export function canPrepareLocalTask(imported: Pick<BenchmarkImportResult, "status" | "manifest" | "failure">): boolean {
+  return !imported.manifest && (imported.status === "needs_setup" || (imported.status === "invalid" && Boolean(imported.failure)));
+}
+
+class TaskFileError extends Error {
+  readonly stage: "reading" | "fingerprint";
+  readonly fileName: string;
+  readonly exceptionName: string;
+  constructor(stage: "reading" | "fingerprint", fileName: string, exceptionName: string) {
+    super(`Task file failed during ${stage}.`);
+    this.stage = stage;
+    this.fileName = fileName;
+    this.exceptionName = exceptionName;
+  }
+}
+
+export function taskImportFailure(reason: unknown): Pick<BenchmarkImportResult, "errors" | "failure"> {
+  const cause = reason instanceof TaskFileError ? reason : null;
+  const stage = cause?.stage ?? "preparation";
+  return {
+    errors: [cause ? `${stage === "reading" ? "Could not read" : "Could not fingerprint"} ${cause.fileName}. Your task description has been kept. Re-select the file and try again.` : "The task could not be prepared. Your task description has been kept. Retry preparation or re-select the files."],
+    failure: { stage, file_name: cause?.fileName ?? null, exception_name: cause?.exceptionName ?? "UnexpectedError" },
+  };
+}
 
 const taskKindPattern = /^[a-z0-9][a-z0-9_-]*$/;
 const sha256Pattern = /^[a-f0-9]{64}$/;
@@ -140,13 +167,20 @@ export function inspectBenchmarkManifest(value: unknown): { manifest: BenchmarkP
 }
 
 async function sha256(file: File) {
-  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+  let bytes: ArrayBuffer;
+  try { bytes = await file.arrayBuffer(); }
+  catch (cause) { throw new TaskFileError("reading", file.name, cause instanceof Error ? cause.name : "ReadError"); }
+  let digest: ArrayBuffer;
+  try { digest = await crypto.subtle.digest("SHA-256", bytes); }
+  catch (cause) { throw new TaskFileError("fingerprint", file.name, cause instanceof Error ? cause.name : "FingerprintError"); }
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function discoverTaskManifests(files: File[]) {
   const parsed = await Promise.all(files.filter(file => file.name.toLowerCase().endsWith(".json")).map(async file => {
-    const text = await file.text();
+    let text: string;
+    try { text = await file.text(); }
+    catch (cause) { throw new TaskFileError("reading", file.name, cause instanceof Error ? cause.name : "ReadError"); }
     try { return { file, value: JSON.parse(text) as unknown }; }
     catch { return { file, value: null }; }
   }));

@@ -9,7 +9,6 @@ import {
   Check,
   ChevronDown,
   CircleDashed,
-  Clock3,
   Download,
   FileCheck2,
   FileText,
@@ -30,6 +29,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { ResultReferenceField } from "@/components/result-reference-field";
 import { BenchmarkCertificateResult } from "@/components/benchmark-certificate";
+import { ReadonlyExample } from "@/components/readonly-example";
+import { useTaskInputDraft } from "@/hooks/use-task-input-draft";
+import type { TaskInputDraft } from "@/lib/task-input-draft";
 import { saveResultReference } from "@/lib/result-reference.mjs";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import {
@@ -50,6 +52,8 @@ import {
   validateBenchmarkFiles,
   prepareBenchmarkFiles,
   createLocalTaskPackage,
+  taskImportFailure,
+  canPrepareLocalTask,
   type LocalTaskSetup,
   BENCHMARK_PACKAGE_SCHEMA_VERSION,
   assertBenchmarkCompletionCriteria,
@@ -61,7 +65,7 @@ import {
 import { calculateRunMetrics } from "@/lib/metric-calculator.mjs";
 import { composeTaskInstructions } from "@/lib/task-instructions.mjs";
 import { readTaskInstructions } from "@/lib/task-instructions-view";
-import { canSubmitTaskResult, canSaveCompleteMeasurement, measurementReady, nextAvailableRunSequence, runConsolePrompt, runWorkInstructions } from "@/lib/run-console-ui";
+import { canSubmitTaskResult, canSaveCompleteMeasurement, measurementReady, nextAvailableRunSequence, runAccessPrompt, runConsolePrompt, runWorkInstructions } from "@/lib/run-console-ui";
 import { inspectCompletionBundle } from "@/lib/completion-bundle-import.mjs";
 import { clearEvidenceBundles, listEvidenceBundles, saveEvidenceBundle } from "@/lib/evidence-store";
 import { hasMeasuredHumanTime } from "@/lib/timing-evidence.mjs";
@@ -287,6 +291,8 @@ function StatusDot({ tone }: { tone: "good" | "warn" | "idle" }) {
 
 export default function Home() {
   const [activeNav, setActiveNav] = useState<NavKey>("home");
+  const [showExample, setShowExample] = useState(false);
+  const taskDescription = useTaskInputDraft();
   const [preparedSetup, setPreparedSetup] = useState<ConnectionDraft | null>(null);
   const [setupError, setSetupError] = useState("");
   const [automation, setAutomation] = useState<AutomationConnection | null>(null);
@@ -1028,8 +1034,8 @@ export default function Home() {
     let result: BenchmarkImportResult;
     try {
       result = localSetup ? await createLocalTaskPackage(files, localSetup) : await prepareBenchmarkFiles(files);
-    } catch {
-      result = { ...pending, status: "invalid", errors: ["The selected files could not be read. Choose them again and retry; no task was connected."] };
+    } catch (cause) {
+      result = { ...pending, status: "invalid", ...taskImportFailure(cause) };
     }
     if (sequence !== importSequenceRef.current) return;
     setBenchmarkImport(result);
@@ -1040,7 +1046,7 @@ export default function Home() {
 
   async function prepareLocalBenchmark(name: string, instructions: string) {
     const imported = benchmarkImportRef.current;
-    if (imported.status !== "needs_setup") return;
+    if (!canPrepareLocalTask(imported)) return;
     await importBenchmark(imported.selected_files, { name, instructions, taskKind: preparedSetup ? undefined : automation?.manifest.automation.task_kind });
   }
 
@@ -1290,7 +1296,7 @@ export default function Home() {
           <div className="brand-mark"><ShieldCheck size={19} /></div>
           <div>
             <p className="brand-name">Automation Auditor</p>
-            <p className="brand-meta">Does automation save you time?</p>
+            <p className="brand-meta">Compare human work time—with and without automation.</p>
           </div>
         </div>
 
@@ -1325,10 +1331,10 @@ export default function Home() {
           </div>
         </div>
         <button className="workspace-switcher">
-          <span className="avatar">{automation ? automation.name.slice(0, 2).toUpperCase() : "—"}</span>
+          <span className="avatar">{(preparedSetup?.name ?? automation?.name)?.slice(0, 2).toUpperCase() ?? "—"}</span>
           <span>
-            <strong>{automation?.name ?? "No automation selected"}</strong>
-            <small>{automation ? `${automation.versionA} · ${automation.adapter}` : "Connect an automation"}</small>
+            <strong>{preparedSetup?.name ?? automation?.name ?? "No tool setup"}</strong>
+            <small>{preparedSetup ? "Tool setup saved — awaiting task connection" : automation ? `${automation.versionA} · Connected` : "Set up your tool"}</small>
           </span>
           <ChevronDown size={15} />
         </button>
@@ -1337,7 +1343,7 @@ export default function Home() {
       <section className="workspace">
         <header className="topbar">
           <div className="breadcrumb">
-            <span>{automation?.name ?? "Evaluation workspace"}</span>
+            <span>{preparedSetup ? `${preparedSetup.name} · Setup saved` : automation?.name ?? "Evaluation workspace"}</span>
             <span>/</span>
             <strong>{navigation.find((item) => item.key === activeNav)?.label}</strong>
           </div>
@@ -1352,13 +1358,15 @@ export default function Home() {
         {setupError && <div className="workflow-alert" role="alert">{setupError}</div>}
 
         {activeNav === "home" ? (
-          <WorkflowHome guidance={guidance} status={workflowStatus} onNavigate={setActiveNav} />
+          <WorkflowHome guidance={guidance} status={workflowStatus} onNavigate={setActiveNav} onExample={() => setShowExample(true)} />
         ) : activeNav === "run" && automation && attachedBenchmark ? (
           <RunConsole
             key={runId}
             automation={automation}
             connectivityEvidence={connectivityEvidence}
             benchmark={attachedBenchmark}
+            onBeginConnectivityDryRun={beginConnectivityDryRun}
+            onResolveGuidedConnectivity={resolveGuidedConnectivity}
             benchmarkFiles={benchmarkImport.selected_files}
             mode={mode}
             runId={runId}
@@ -1405,7 +1413,6 @@ export default function Home() {
         ) : activeNav === "automations" ? (
           <Automations
             automation={automation}
-            connectivityEvidence={connectivityEvidence}
             draftName={draftName}
             draftPurpose={draftPurpose}
             draftVersionA={draftVersionA}
@@ -1433,11 +1440,9 @@ export default function Home() {
             onValidate={validateConnectionContract}
             onConnect={connectAutomation}
             onExport={exportConnectionManifest}
-            onBeginConnectivityDryRun={beginConnectivityDryRun}
-            onResolveGuidedConnectivity={resolveGuidedConnectivity}
           />
         ) : activeNav === "benchmarks" ? (
-          <Benchmarks automation={automation} preparedSetup={preparedSetup} setupCurrent={setupCurrent} busy={workspaceStoreStatus !== "ready" || ["running", "submitted"].includes(runState)} imported={benchmarkImport} attached={attachedBenchmark} onImport={importBenchmark} onPrepare={prepareLocalBenchmark} onAttach={attachValidatedBenchmark} />
+          <Benchmarks automation={automation} preparedSetup={preparedSetup} setupCurrent={setupCurrent} busy={workspaceStoreStatus !== "ready" || ["running", "submitted"].includes(runState)} imported={benchmarkImport} attached={attachedBenchmark} taskDraft={taskDescription.draft} onDraftChange={taskDescription.update} draftReady={taskDescription.ready} draftNotice={taskDescription.notice} onImport={importBenchmark} onPrepare={prepareLocalBenchmark} onAttach={attachValidatedBenchmark} />
         ) : activeNav === "compare" ? (
           <Compare automation={automation} completedRuns={completedRuns} task={attachedBenchmark} onNavigate={setActiveNav} />
         ) : (
@@ -1457,6 +1462,7 @@ export default function Home() {
         )}
         {activeNav !== "home" && activeNav !== "automations" && <NextStepPanel current={activeNav} state={workflowState} onNavigate={setActiveNav} />}
       </section>
+      {showExample && <ReadonlyExample onClose={() => setShowExample(false)} />}
     </main>
   );
 }
@@ -1472,9 +1478,9 @@ function WorkflowTrail({ current, status, onNavigate }: { current: NavKey; statu
   return <nav className="workflow-trail" aria-label="Evaluation steps">{workflowSteps.map((step, index) => <button key={step.page} className={current === step.page ? "workflow-step current" : "workflow-step"} aria-current={current === step.page ? "step" : undefined} onClick={() => onNavigate(step.page)}><span>{status[index] ? <Check size={14} /> : index + 1}</span><div><strong>{step.title}</strong><small>{step.label} · {status[index] ? "Ready" : current === step.page ? "Current step" : "To do"}</small></div></button>)}</nav>;
 }
 
-function WorkflowHome({ guidance, status, onNavigate }: { guidance: ReturnType<typeof workflowNextStep>; status: boolean[]; onNavigate: (page: NavKey) => void }) {
+function WorkflowHome({ guidance, status, onNavigate, onExample }: { guidance: ReturnType<typeof workflowNextStep>; status: boolean[]; onNavigate: (page: NavKey) => void; onExample: () => void }) {
   return <div className="page-content workflow-home">
-    <section className="workflow-intro"><div><p className="eyebrow">Automation Auditor</p><h1>Does your automation tool<br />really save you time?</h1><p>Compare the human work time needed to complete the same task with and without automation — including checking and corrections.</p><button className="primary-action" disabled={guidance.disabled} onClick={() => onNavigate(guidance.page)}>Start evaluation<ArrowRight size={17} /></button></div></section>
+    <section className="workflow-intro"><div><p className="eyebrow">Automation Auditor</p><h1>Does your automation tool<br />really save you time?</h1><p>Compare the human work time needed to complete the same task with and without automation — including checking and corrections.</p><div className="workflow-entry-actions"><button className="primary-action" disabled={guidance.disabled} onClick={() => onNavigate(guidance.page)}>Start evaluation<ArrowRight size={17} /></button><button className="secondary-action" onClick={onExample}>View example</button></div></div></section>
     <section className="workflow-overview"><div className="workflow-overview-heading"><h2>Four steps to a time comparison</h2><p>Use the same task and completion instructions throughout.</p></div><ol className="workflow-list">{workflowSteps.map((step, index) => <li key={step.page}><span className="workflow-number">0{index + 1}</span><div><h3>{step.title}</h3><p>{step.detail}</p></div><button className="secondary-action" onClick={() => onNavigate(step.page)}>{step.label}<ArrowRight size={15} /></button><small>{status[index] ? "Ready" : "To do"}</small></li>)}</ol></section>
   </div>;
 }
@@ -1498,6 +1504,8 @@ function PageHeading({ eyebrow, title, copy }: { eyebrow: string; title: string;
 function RunConsole({
   automation,
   connectivityEvidence,
+  onBeginConnectivityDryRun,
+  onResolveGuidedConnectivity,
   benchmark,
   benchmarkFiles,
   mode,
@@ -1542,6 +1550,8 @@ function RunConsole({
 }: {
   automation: AutomationConnection;
   connectivityEvidence: ConnectivityEvidence | null;
+  onBeginConnectivityDryRun: () => void;
+  onResolveGuidedConnectivity: (verified: boolean) => void;
   benchmark: BenchmarkPackageManifest;
   benchmarkFiles: File[];
   mode: RunMode;
@@ -1587,7 +1597,8 @@ function RunConsole({
   const [showResultSubmission, setShowResultSubmission] = useState(false);
   const [showTaskInstructions, setShowTaskInstructions] = useState(false);
   const savedMeasurementReady = Boolean(completedRun && measurementReady(calculateRunMetrics(completedRun.events)));
-  const timerPrompt = runConsolePrompt(runState, humanActive, events.some(event => event.metadata.billable_human_active), savedMeasurementReady);
+  const timerPrompt = runAccessPrompt(mode, runState, automation.adapter, connectivityEvidence?.outcome, automation.name)
+    ?? runConsolePrompt(runState, humanActive, events.some(event => event.metadata.billable_human_active), savedMeasurementReady);
   const canFinishMeasurement = !resultReferenceDirty && canSaveCompleteMeasurement(humanActive, sealing, timingComplete, acceptanceDecision, reviewConfirmed, reviewerRef, reviewOutputRef, hasMeasuredHumanTime(events));
   const canArchiveIncomplete = !resultReferenceDirty && !humanActive && !sealing && (!timingComplete || acceptanceDecision === "fail" || !hasMeasuredHumanTime(events)) && reviewConfirmed && Boolean(reviewerRef.trim()) && Boolean(reviewOutputRef.trim()) && Boolean(acceptanceDecision) && (acceptanceDecision !== "fail" || Boolean(decisionNote.trim()));
   const evidenceChecklist = [
@@ -1657,7 +1668,14 @@ function RunConsole({
             <div className={timerPrompt.tone === "warning" ? "timer-guidance timer-guidance-warning" : "timer-guidance"} role="status">{timerPrompt.text}</div>
             <div className="console-actions">
               {runState === "ready" && (
-                  <button className="primary-action" disabled={runIdStored || automationRunBlocked || runPersistenceStatus !== "ready" || !completionCriteriaRef.trim()} onClick={onStart}><Play size={17} fill="currentColor" /> {automationRunBlocked ? "Connectivity verification required" : runPersistenceStatus !== "ready" ? "Checkpoint unavailable" : "Prepare run (timer stays off)"}</button>
+                automationRunBlocked ? (
+                  connectivityEvidence?.outcome === "pending_manual_confirmation" ? (
+                    automation.adapter === "guided" ? <>
+                      <button className="primary-action" disabled={runIdStored || runPersistenceStatus !== "ready"} onClick={() => onResolveGuidedConnectivity(true)}>Confirm tool opened</button>
+                      <button className="secondary-action" disabled={runIdStored || runPersistenceStatus !== "ready"} onClick={() => onResolveGuidedConnectivity(false)}>Could not open tool</button>
+                    </> : <button className="secondary-action" disabled>Checking tool access…</button>
+                  ) : <button className="primary-action" disabled={runIdStored || runPersistenceStatus !== "ready"} onClick={onBeginConnectivityDryRun}><Link2 size={17} />{automation.adapter === "guided" ? "Open tool" : "Check tool access"}</button>
+                ) : <button className="primary-action" disabled={runIdStored || automationRunBlocked || runPersistenceStatus !== "ready" || !completionCriteriaRef.trim()} onClick={onStart}><Play size={17} fill="currentColor" /> {runPersistenceStatus !== "ready" ? "Checkpoint unavailable" : "Prepare run (timer stays off)"}</button>
               )}
               {(runState === "running" || runState === "submitted") && (
                 <>
@@ -1676,7 +1694,6 @@ function RunConsole({
               )}
             </div>
             {runState === "ready" && repeatRequired && <div className="review-error" role="status"><TriangleAlert size={15} />Your previous {mode} measurement is incomplete and stays saved in Audit Report. Click Prepare run to set up a new measurement, then start timing before repeating the full task.</div>}
-            {runState === "ready" && automationRunBlocked && <div className="review-error"><TriangleAlert size={15} />Verify the automation connection in Automations before starting an automated lane. Human baseline remains available.</div>}
             {benchmark.schema_version === BENCHMARK_PACKAGE_SCHEMA_VERSION ? <section className="task-instructions-section" aria-label="Task instructions">
               <p>The same task instructions apply to manual work and each tool version.</p>
               <button className="secondary-action" aria-expanded={showTaskInstructions} aria-controls="task-instructions-content" onClick={() => setShowTaskInstructions(value => !value)}><FileText size={15} />{showTaskInstructions ? "Hide task instructions" : "View task instructions"}</button>
@@ -1814,7 +1831,6 @@ function TaskInstructionsReader({ benchmark, files }: { benchmark: BenchmarkPack
 
 function Automations({
   automation,
-  connectivityEvidence,
   draftName,
   draftPurpose,
   draftVersionA,
@@ -1842,11 +1858,8 @@ function Automations({
   onValidate,
   onConnect,
   onExport,
-  onBeginConnectivityDryRun,
-  onResolveGuidedConnectivity,
 }: {
   automation: AutomationConnection | null;
-  connectivityEvidence: ConnectivityEvidence | null;
   draftName: string;
   draftPurpose: string;
   draftVersionA: string;
@@ -1874,8 +1887,6 @@ function Automations({
   onValidate: () => void;
   onConnect: () => void;
   onExport: () => void;
-  onBeginConnectivityDryRun: () => void;
-  onResolveGuidedConnectivity: (verified: boolean) => void;
 }) {
   const targetLabel = draftAdapter === "guided" ? "Launch URL" : draftAdapter === "events" ? "Event endpoint" : "API endpoint";
   return (
@@ -1889,13 +1900,7 @@ function Automations({
           <section className="connected-banner">
             <span className="connected-icon"><Check size={17} /></span>
             <div><p className="field-label">Connected automation</p><h2>{automation.name}</h2><p>{automation.manifest.automation.task_kind} · {automation.manifest.manifest_id} · Current: {automation.versionA} · Candidate: {automation.versionB || "not registered"}</p></div>
-            <div className="connected-actions"><span className="connection-status"><StatusDot tone="good" /> Setup checked · access {connectivityEvidence?.outcome.replaceAll("_", " ") ?? automation.manifest.validation.connectivity_status.replaceAll("_", " ")}</span><button className="export-button" onClick={onExport}>Export tool setup</button></div>
-          </section>
-          <section className={`connectivity-panel connectivity-${connectivityEvidence?.outcome ?? "not-tested"}`}>
-            <div><p className="field-label">Check tool access</p><h3>{connectivityEvidence?.outcome === "verified" ? "Access check passed" : connectivityEvidence?.outcome === "failed" ? "Access check failed" : connectivityEvidence?.outcome === "pending_manual_confirmation" ? automation.adapter === "guided" ? "Waiting for your confirmation" : "Checking endpoint" : "Not tested"}</h3><p>{connectivityEvidence?.note ?? (automation.adapter === "guided" ? "Open the tool and confirm that it opens. This checks access, not whether it can complete the task." : "Check whether the endpoint responds to an unauthenticated HEAD request. This checks access, not whether it can complete the task.")}</p>{connectivityEvidence && <code>{connectivityEvidence.evidence_id}</code>}</div>
-            <div className="connectivity-actions">
-              {!connectivityEvidence || connectivityEvidence.outcome !== "pending_manual_confirmation" ? <button className="secondary-action" onClick={onBeginConnectivityDryRun}>{automation.adapter === "guided" ? "Open tool to check access" : "Run unauthenticated HEAD check"}</button> : automation.adapter === "guided" ? <><button className="secondary-action" onClick={() => onResolveGuidedConnectivity(false)}>Record failure</button><button className="primary-action" onClick={() => onResolveGuidedConnectivity(true)}>Confirm tool opened</button></> : <button className="secondary-action" disabled>Checking…</button>}
-            </div>
+            <div className="connected-actions"><span className="connection-status"><StatusDot tone="good" /> Setup checked</span><button className="export-button" onClick={onExport}>Export tool setup</button></div>
           </section>
         </>
       )}
@@ -1956,7 +1961,7 @@ function Automations({
           </section>
 
           <div className="connector-actions">
-            <span>Passwords and API keys are not stored in this tool setup. Check tool access separately before an automated run.</span>
+            <span>Passwords and API keys are not stored in this tool setup. Open and confirm the tool in Run Console before an automated run.</span>
           </div>
         </section>
 
@@ -1993,6 +1998,10 @@ function Benchmarks({
   onImport,
   onPrepare,
   onAttach,
+  taskDraft,
+  onDraftChange,
+  draftReady,
+  draftNotice,
 }: {
   automation: AutomationConnection | null;
   preparedSetup: ConnectionDraft | null;
@@ -2003,15 +2012,21 @@ function Benchmarks({
   onImport: (files: File[]) => void;
   onPrepare: (name: string, instructions: string) => void;
   onAttach: () => void;
+  taskDraft: TaskInputDraft;
+  onDraftChange: (draft: TaskInputDraft) => void;
+  draftReady: boolean;
+  draftNotice: string;
 }) {
-  const [taskName, setTaskName] = useState("");
-  const [taskWork, setTaskWork] = useState("");
-  const [taskDeliverable, setTaskDeliverable] = useState("");
-  const [taskCompletion, setTaskCompletion] = useState("");
+  const { name: taskName, work: taskWork, deliverable: taskDeliverable, completion: taskCompletion } = taskDraft;
+  const setTaskName = (name: string) => onDraftChange({ ...taskDraft, name });
+  const setTaskWork = (work: string) => onDraftChange({ ...taskDraft, work });
+  const setTaskDeliverable = (deliverable: string) => onDraftChange({ ...taskDraft, deliverable });
+  const setTaskCompletion = (completion: string) => onDraftChange({ ...taskDraft, completion });
   const taskInstructions = composeTaskInstructions({ work: taskWork, deliverable: taskDeliverable, completion: taskCompletion });
   const manifest = imported.manifest;
   const compatible = Boolean(manifest && (preparedSetup ? setupCurrent : automation && automation.manifest.automation.task_kind === manifest.task_kind));
   const ready = imported.status === "ready" && Boolean(manifest);
+  const describeTask = !manifest && (imported.status === "needs_setup" || Boolean(imported.failure) || Object.values(taskDraft).some(value => value.trim()));
   return (
     <div className="page-content">
       <PageHeading eyebrow="Benchmarks" title="Import your task files" copy="Import your task files. Include a task package JSON if you have one; otherwise, describe your task below." />
@@ -2022,26 +2037,29 @@ function Benchmarks({
         <div className="import-dropzone">
           <div className="document-mark"><BookOpenCheck size={23} /></div>
           <div><h2>Select task files</h2><p>Task files stay in this browser on this device. If you later request AI analysis, run records are sent to Nebius Token Factory.</p></div>
-          <label className="primary-action file-picker">Choose files<Input aria-label="Choose task files" type="file" multiple disabled={busy || imported.status === "validating"} onChange={(event) => { const files = Array.from(event.target.files ?? []); if (files.length) { setTaskName(""); setTaskWork(""); setTaskDeliverable(""); setTaskCompletion(""); void onImport(files); } event.target.value = ""; }} /></label>
+          <label className="primary-action file-picker">Choose files<Input aria-label="Choose task files" type="file" multiple disabled={busy || imported.status === "validating"} onChange={(event) => { const files = Array.from(event.target.files ?? []); if (files.length) void onImport(files); event.target.value = ""; }} /></label>
         </div>
         <div className={`import-status import-status-${imported.status}`}>
           <StatusDot tone={imported.status === "ready" ? "good" : imported.status === "validating" ? "warn" : "idle"} />
           <div><strong>{imported.status === "idle" ? "No task files selected" : imported.status === "validating" ? "Preparing task…" : imported.status === "needs_setup" ? "Files selected — describe your task" : imported.status === "ready" ? "Task files ready" : "Task could not be prepared"}</strong><span>{imported.status === "idle" ? "Select your task materials to continue." : `${imported.imported_file_count} local files${imported.status === "ready" ? " stored for this task" : " selected"}`}</span></div>
         </div>
         {imported.errors.length > 0 && <div className="import-errors">{imported.errors.map((error) => <div key={error}><TriangleAlert size={14} />{error}</div>)}</div>}
+        {imported.failure && <details className="task-technical-details"><summary>Import diagnostic</summary><p>Stage: {imported.failure.stage} · File: {imported.failure.file_name ?? "not identified"} · Error: {imported.failure.exception_name}</p></details>}
       </section>
 
-      {imported.status === "needs_setup" && <section className="benchmark-detail-card local-task-setup">
+      {describeTask && <section className="benchmark-detail-card local-task-setup">
         <h2>Describe your task</h2>
         <p>Answer all three questions. Use the same requirements for manual work and each tool version.</p>
-        <fieldset className="connector-form" disabled={busy}>
+        <p className="task-record-note">Your description is kept when files change. Check that it still applies to the selected materials.</p>
+        <p className="task-record-note" role="status">{draftNotice}</p>
+        <fieldset className="connector-form" disabled={busy || !draftReady || imported.status === "validating"}>
           <label className="form-wide"><span>Task name</span><Input aria-label="Task name" value={taskName} onChange={event => setTaskName(event.target.value)} placeholder="e.g. Review supplier onboarding materials" /></label>
           <label className="form-wide"><span>1. What should be done?</span><textarea aria-label="What should be done?" value={taskWork} onChange={event => setTaskWork(event.target.value)} rows={3} placeholder="e.g. Check the selected files against the task checklist." /></label>
           <label className="form-wide"><span>2. What should be delivered?</span><textarea aria-label="What should be delivered?" value={taskDeliverable} onChange={event => setTaskDeliverable(event.target.value)} rows={3} placeholder="e.g. A saved report with a result for each item and reasons for any issues." /></label>
           <label className="form-wide"><span>3. When is the task complete?</span><textarea aria-label="When is the task complete?" value={taskCompletion} onChange={event => setTaskCompletion(event.target.value)} rows={3} placeholder="e.g. I have checked the result, made any necessary corrections and saved it for use." /></label>
         </fieldset>
         <div className="file-grid">{imported.selected_files.map((file, index) => <div className="file-item" key={`${file.name}-${index}`}><FileText size={16} /><span>{file.name}</span></div>)}</div>
-        <button className="primary-action" disabled={busy || !taskName.trim() || taskInstructions === null} onClick={() => { if (taskInstructions !== null) onPrepare(taskName, taskInstructions); }}>Prepare task <ArrowRight size={16} /></button>
+        <button className="primary-action" disabled={busy || !draftReady || !canPrepareLocalTask(imported) || !imported.selected_files.length || !taskName.trim() || taskInstructions === null} onClick={() => { if (taskInstructions !== null) onPrepare(taskName, taskInstructions); }}>{imported.failure ? "Retry preparation" : "Prepare task"} <ArrowRight size={16} /></button>
         <p className="task-record-note">You decide when the task is complete. These requirements are fixed for this comparison; changed requirements need a new task.</p>
       </section>}
 

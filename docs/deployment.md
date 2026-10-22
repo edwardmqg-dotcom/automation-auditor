@@ -20,13 +20,13 @@ The required D1 binding is `ANALYST_BUDGET_DB`. Fresh independent instances use 
 
 For an existing instance, inspect applied migrations and back up before an approved change; do not rerun migrations blindly. Read back cap, cumulative charges, in-flight requests, halt state and bindings after deployment. No reset or refund is implied by a new source version.
 
-Activation requires exact opt-in, the server API key, reviewer digest, supported model/endpoint, valid pricing attestation, idempotency UUID and migrated budget binding. All fail closed; no automatic model retry is introduced. Deliver the **AI analysis access code** privately to authorized reviewers, never the Nebius key. The existing older hosted UI calls it **Reviewer access code**.
+Activation requires exact opt-in, the server API key, reviewer digest, supported model/endpoint, valid pricing attestation, idempotency UUID and migrated budget binding. All fail closed; no automatic model retry is introduced. Deliver the **AI analysis access code** privately to authorized reviewers, never the Nebius key. Earlier UI versions called it **Reviewer access code**.
 
 ## Current protection window
 
 The implementation pins `nvidia/nemotron-3-super-120b-a12b` at `https://api.tokenfactory.nebius.com/v1` and policy `nemotron-super-2026-10-14-buffer2-hackathon-v2`. `ANALYST_PRICING_VERIFIED_AT` must come from an actual tariff check, not a future/invented date; `ANALYST_PRICING_VALID_UNTIL` cannot exceed `2027-01-31T15:59:59.000Z` (Beijing January 31, 2027, 23:59:59). This replaces the earlier seven-day ceiling and does not increase the cumulative US$25 budget or lock a provider's price. Current tariffs and settings must be rechecked before an authorized rollout. A changed tariff requires reviewed policy changes, not fabricated timestamps. Public templates remain blank.
 
-The protected October 14 service came from local commit `49bbc23fb89ec57d22e5db40ee63d831f71b9d6e`, Worker `1c308932-df27-46bd-8739-78583c2c6572`, retaining the older UI. This current workflow candidate is not that deployed build. Its existing saved calls are historical evidence; offline tests/builds do not invoke the provider or prove a new production inference succeeded. Budget/expiry protection is not proof that unrestricted judge access is fully satisfied. Reviewer delivery and continued availability need explicit operational review.
+The unified release builds on public commit `4ee038c2b46bd7aff19bcee6e1dda6083389b024` and hosted baseline `40f6af95-2c62-4f94-9aef-c221a40cd9c3`. Publish and deploy one reviewed source manifest, not separate user workflows. Read live versions and protected settings before rollout; retain the cumulative ledger, secret bindings and hostname. Record new versions after authorization and actual execution. Packaging changes no model, pricing attestation, budget or application window. Historical calls are not new inference, and protection settings alone do not prove unrestricted judging access.
 
 ## Required record for a future release
 

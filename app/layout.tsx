@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Automation Auditor",
-  description: "Evidence-based release gates for AI automations.",
+  description: "Compare human work time with and without automation, including checking, corrections and saving.",
   other: {
     "codex-preview": "development",
   },

@@ -2,6 +2,13 @@
 @import "tw-animate-css";
 @import "../vendor/shadcn-tailwind-4.13.0.css";
 
+/* Narrow extension of the approved product palette, typography and layout. */
+.workflow-entry-actions{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.readonly-example .benchmark-detail-card{margin:18px auto;max-width:1080px}
+.readonly-example .workflow-alert{max-width:1080px;margin:0 auto}
+.readonly-example p{line-height:1.6;overflow-wrap:anywhere}
+.example-certificate{margin-top:20px}
+
 /* Result certificate: retain the surrounding product's approved type/color
    system; the printable document uses Georgia and Trebuchet MS locally. */
 .certificate-result{display:flex;align-items:center;gap:22px;margin-top:24px;padding:24px;border:1px solid #cfdbeb;border-left:5px solid #245bc0;background:#f1f5fb;border-radius:3px}

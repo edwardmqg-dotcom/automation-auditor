@@ -1,0 +1,43 @@
+{
+  "schema_version": "time-benchmark-certificate-v0.1",
+  "evidence_sha256": "eeed11598e566e899fcbb8481fb84432b8656ef360b50d2b38844d907107556d",
+  "tool_name": "ChatGPT",
+  "tool_id": "chatgpt",
+  "tool_version": "GPT6-web-rehearsal-v1",
+  "lane": "Version A",
+  "task_name": "TEST ONLY Run Console task",
+  "task_id": "TASK-893739aca4f8951000203d39ef9486c3c4e3dd3878b6e04c0ac4467a08ce854c",
+  "task_version": "local-task-v1",
+  "review_as_of": "2026-10-11",
+  "baseline_run_id": "RUN-HUMAN-TASK-893739ACA4F8951-02",
+  "automation_run_id": "RUN-A-TASK-893739ACA4F8951-04",
+  "baseline_reviewer": "EddieM",
+  "automation_reviewer": "EddieM",
+  "baseline_completed_at": "2026-10-12T15:37:43.794Z",
+  "automation_completed_at": "2026-10-15T15:14:42.695Z",
+  "completion_criteria_ref": "sha256:5e82fb69e4cd3bc6bdd68364a1d7653a68e83c09315af3df22f31335773b08de",
+  "baseline_build": "local-development-uncommitted",
+  "automation_build": "local-development-uncommitted",
+  "input_refs": [
+    "sha256:5e82fb69e4cd3bc6bdd68364a1d7653a68e83c09315af3df22f31335773b08de",
+    "sha256:c37857f9ebedb7d117b051dab96874d56eeec24543d4308262a667490d3a9dfb"
+  ],
+  "comparison": {
+    "metric_schema_version": "time-comparison-v0.1",
+    "baseline_run_id": "RUN-HUMAN-TASK-893739ACA4F8951-02",
+    "automation_run_id": "RUN-A-TASK-893739ACA4F8951-04",
+    "task_id": "TASK-893739aca4f8951000203d39ef9486c3c4e3dd3878b6e04c0ac4467a08ce854c",
+    "task_version": "local-task-v1",
+    "completion_criteria_ref": "sha256:5e82fb69e4cd3bc6bdd68364a1d7653a68e83c09315af3df22f31335773b08de",
+    "baseline_human_active_ms": 256463,
+    "automation_human_active_ms": 256114,
+    "human_active_delta_ms": 349,
+    "relative_improvement_pct": 0.13608200793096858,
+    "observed_time_reduction": true,
+    "limitation": "Controlled task, based on user completion and timing confirmation. Not an independent output-quality assessment, production-safety judgment or enterprise ROI estimate."
+  },
+  "note": "Recorded active human work for this task, including checking and necessary corrections. Completion and full timing were confirmed by the named users. Not independent certification, an output-quality assessment or a general ROI claim.",
+  "label_basis": "Friendly names come from the matching current setup/task; run identities and versions come from sealed records.",
+  "certificate_sha256": "579ae407d3c6cd845b7f368775f0728f0698e395589b37ff1107e5117c3e9810",
+  "certificate_id": "AA-579AE407D3C6CD84"
+}

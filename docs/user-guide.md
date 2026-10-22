@@ -6,6 +6,8 @@ Measure the active human work needed to finish the same task manually and with a
 
 Select **Start evaluation**. The core flow is **Automations → Benchmarks → Run Console → Compare**. **Audit Report** is optional for inspecting/exporting evidence and requesting AI explanations.
 
+Home's **View example** displays the saved October 15 TEST ONLY summary rehearsal and its original certificate metadata. It does not seed workspace records, connect a tool/task, start timing, sign completion or request analysis. The negligible difference illustrates essentially equal work time, not a business-productivity gain.
+
 ## Automations
 
 Enter **Launch URL**, **Automation name**, **Purpose** and **Current version A**. **Candidate version B** is optional. Record an actual release/model and relevant settings; a web rehearsal label is not an immutable provider snapshot.
@@ -13,6 +15,8 @@ Enter **Launch URL**, **Automation name**, **Purpose** and **Current version A**
 Under **Advanced Settings**, keep the defaults if you open the tool, provide files and bring back its result yourself: **Guided external run**, **Manual files**, **Manual result import**, **Run Console instrumentation**. Developer transport options describe an integration contract; selecting them does not implement a task API or webhook receiver.
 
 Select **Check setup**, then **Save and continue to Benchmarks**. This saves a draft; the final connection is confirmed with a task. Setup checking does not contact or prove access to the external tool.
+
+The header and sidebar show the saved tool name with **Tool setup saved — awaiting task connection** until a prepared task is confirmed. A saved setup is not a connection or a proof that the external website is accessible.
 
 ## Benchmarks
 
@@ -23,9 +27,15 @@ Select **Choose files**. Use either of two paths:
 
 An ordinary JSON document may itself be task material. An invalid declared package is rejected, not silently treated as ordinary material. Check that you selected the intended files; without an external inventory, the app cannot detect files you forgot to select.
 
+The task name and three answers are saved independently on this device. Changing files, switching pages or reloading does not intentionally clear them; check that the retained answers still apply. After a reload before final connection, select files again. Wait for the saved/restored message; copy the text before reloading if a save warning appears. Browser-local storage is not a backup.
+
+Invalid selections, such as duplicate filenames, must be corrected before **Prepare task** is available. A read, fingerprint or preparation exception keeps the text and offers **Retry preparation**; re-select an inaccessible file if needed. **Import diagnostic** identifies the stage, filename and exception name without exposing the original exception detail. It does not certify the root cause or grade the business task.
+
 Select **Confirm task connection with [tool name]**. **Task connected** confirms the explicit link. Reuse this same saved task for all lanes; changing materials, instructions or review date creates a different comparison scope. On an existing workspace, preparing another tool draft does not rewrite sealed records or require redefining the task.
 
-In **Automations → Check tool access**, select **Open tool to check access**, then personally select **Confirm tool opened** only when it has opened. **Access check passed** proves this access check, not task success. Access must be rechecked after a reload.
+In **Run Console → Version A/B**, select **Open tool**. It opens the external tool in a new tab; return to the same Run Console and personally select **Confirm tool opened** only when it has opened. The same action area then offers **Prepare run (timer stays off)**. If the tool did not open, select **Could not open tool** and retry. None of these access actions starts timing or confirms task completion. Run Console is the only access-check entry; Automations is for tool setup.
+
+This is a session access check, not proof of task success. Access must be rechecked after a reload. Non-guided adapters use the existing unauthenticated HEAD check and do not offer a manual confirmation of a network response.
 
 ## Run Console
 
@@ -46,6 +56,8 @@ A completed, fully timed Human baseline and at least one compatible automation r
 **Export time report** exports the comparison. Displayed lane times are rounded to seconds; differences use original milliseconds and can be negative or negligible. One run cannot establish a general efficiency or ROI claim. Missing/incomplete measurements stay visible as gaps rather than invented savings.
 
 Select **View certificate** in Compare or Audit Report for a shareable result. The certificate shows recorded active human time, the task/tool version and the original completion-confirmation IDs. These IDs are user-entered references, not authenticated signatures. Each certificate identifies its source records and fingerprints; generating one does not change or sign a run.
+
+**User-confirmed time comparison** means the named users confirmed task completion and full timing. It is a record-based time comparison, not independent output-quality certification.
 
 **Download HTML** saves a self-contained offline copy. **Print / Save as PDF** opens the browser print dialog: select Save as PDF rather than a physical printer when you want a file, choose the desired layout and turn off browser headers/footers if preferred. Preview before saving; long task or reviewer names may require a different layout. Downloaded copies can be sent to intended recipients, but doing so shares the task/reviewer information. No public link is created or data uploaded by these controls.
 

@@ -1,4 +1,22 @@
+import type { AdapterType } from "./automation-connection";
+
 export type ConsoleRunState = "ready" | "running" | "submitted" | "reviewed";
+
+type AccessOutcome = "pending_manual_confirmation" | "verified" | "failed" | null | undefined;
+
+// Session access guidance only. The existing handlers still own verification;
+// these prompts never create a run, confirm completion, or start a timer.
+export function runAccessPrompt(mode: "Human" | "Version A" | "Version B", state: ConsoleRunState, adapter: AdapterType, outcome: AccessOutcome, toolName: string) {
+  if (mode === "Human" || state !== "ready") return null;
+  if (outcome === "verified") return { tone: "neutral", text: "Tool access confirmed. Click Prepare run to prepare the run. This does not start timing." };
+  if (adapter !== "guided") return outcome === "pending_manual_confirmation"
+    ? { tone: "neutral", text: "Checking tool access. Wait for the result before preparing the run. Timing stays off." }
+    : { tone: outcome === "failed" ? "warning" : "neutral", text: `Check access to ${toolName} before preparing the run. This only checks the endpoint response, not whether the tool can complete the task. Timing stays off.` };
+  if (outcome === "pending_manual_confirmation") return { tone: "neutral", text: `Return here and click Confirm tool opened only if ${toolName} opened successfully. If it did not, choose Could not open tool. Timing stays off.` };
+  return outcome === "failed"
+    ? { tone: "warning", text: `Access to ${toolName} was not confirmed. Click Open tool to try again. Timing stays off.` }
+    : { tone: "neutral", text: `Before preparing this run, check tool access for this session. Open ${toolName}, then return here to confirm that it opens. Timing stays off.` };
+}
 
 export function nextAvailableRunSequence(prefix: string, sequence: number, storedIds: string[]) {
   const ids = new Set(storedIds);
