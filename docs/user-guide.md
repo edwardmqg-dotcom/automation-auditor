@@ -2,6 +2,8 @@
 
 Measure the active human work needed to finish the same task manually and with an automation tool. Include uploading, operating, checking, necessary corrections and saving/exporting; pause for breaks or machine-only waiting. You decide whether the task is complete. Automation Auditor compares recorded time, not business-output quality.
 
+For a hands-on example, use the [image replay kit and English walkthrough](reproduction/image-batch/README.md). Extract the synthetic images and fixed instructions, then record your own Human/Version A comparison in a separate workspace. JSON and paid AI analysis are optional. The kit's arithmetic excerpt is not an importable evidence bundle or a target saving you must reproduce.
+
 ## Home
 
 Select **Start evaluation**. The core flow is **Automations → Benchmarks → Run Console → Compare**. **Audit Report** is optional for inspecting/exporting evidence and requesting AI explanations.

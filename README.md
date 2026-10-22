@@ -6,6 +6,10 @@ Tools and task files are explicitly connected and imported from disk. The produc
 
 For exact screen labels and the four-step path, see the [user guide](docs/user-guide.md), [release notes](docs/release-notes.md) and [deployment guidance](docs/deployment.md). Source and hosted builds use the same reviewed release; preparation alone does not publish or deploy it.
 
+## Try a complete comparison
+
+[Download the image replay kit and follow the English walkthrough](docs/reproduction/image-batch/README.md). It contains 12 synthetic PNGs, fresh working copies, fixed instructions and an offline arithmetic check. Measure a manual Preview workflow against Bulk Resize Photos, then view/download your own certificate. JSON and paid AI analysis are not required. Use your own reviewer reference and a separate workspace; your result need not match the recorded 24.6%. This is an explicit download, not a preloaded product task. Full private evidence, Material Auditor builds and credentials are excluded.
+
 Comparable completed runs now offer **View certificate** in Compare and Audit Report. The certificate recalculates sealed evidence, shows the tool/task/version and the original reviewers, and supports offline HTML download and browser **Print / Save as PDF**. Presentation tiers use the unrounded time reduction: at least 50% gold/celebration; 20–less than 50% green; 0–less than 20% blue; negative deep red with a visible minus sign. Nonzero results keep the same “Less human work time” headline; a negative value represents additional human work. Exact zero says the recorded times are the same. These are visual tiers, not statistical significance or independent certification; the comparison formula and original events remain unchanged. Certificate files share task/reviewer information but omit result-file paths, task contents, credentials and live sharing links.
 
 ## Unified workflow
@@ -92,7 +96,7 @@ Call provenance contains model, prompt/generation versions, request identifiers,
 
 ## Current study limitations
 
-An October 22 image-processing observation recorded 755,930ms for a predefined manual single-image Preview workflow and 569,850ms with Bulk Resize Photos: 186,080ms less active work, displayed as 24.6%. Both records share task inputs and completion criteria, with user-confirmed completion/full timing. This is one operator using synthetic images in a fixed order, not a universal performance or quality claim. See the [observation and limitations](docs/image-batch-observation.md). These private run archives and images are not bundled or loaded into a workspace.
+An October 22 image-processing observation recorded 755,930ms for a predefined manual single-image Preview workflow and 569,850ms with Bulk Resize Photos: 186,080ms less active work, displayed as 24.6%. Both records share task inputs and completion criteria, with user-confirmed completion/full timing. This is one operator using synthetic images in a fixed order, not a universal performance or quality claim. See the [observation and limitations](docs/image-batch-observation.md). The separate image kit provides synthetic originals and a labelled arithmetic excerpt; full private run archives, processed outputs and the original downloaded certificate remain excluded. Nothing is automatically loaded into a workspace.
 
 Manual baselines are matched by task, task version, inputs, review date and completion instructions, not by the tool name that happened to be connected during manual work. Original sealed manifests and events are preserved. Automation A/B records remain scoped to their actual tool and recorded version; different tools are not combined as versions of one tool. Completion and full-timing requirements remain mandatory.
 
