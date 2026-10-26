@@ -1,6 +1,8 @@
 import vinext from "vinext";
 import { defineConfig } from "vite";
 import { resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { resolveAuditorBuildId } from "./build/build-info.mjs";
 import { loadHostingBindings } from "./build/hosting-config.mjs";
 import { sites } from "./build/sites-vite-plugin";
 
@@ -49,7 +51,20 @@ export default defineConfig(async () => {
   // Wrangler snapshots its log path while the Cloudflare plugin is imported.
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
+  let gitRevision = "";
+  let gitDirty = true;
+  try {
+    gitRevision = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    gitDirty = Boolean(execFileSync("git", ["status", "--porcelain"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim());
+  } catch { /* Packaged source without Git metadata uses the explicit local fallback. */ }
+  const auditorBuildId = resolveAuditorBuildId({
+    configuredId: process.env.AUDITOR_BUILD_ID ?? "",
+    gitRevision,
+    gitDirty,
+  });
+
   return {
+    define: { __AUTOMATION_AUDITOR_BUILD_ID__: JSON.stringify(auditorBuildId) },
     server: isCodexSeatbeltSandbox
       ? { watch: { useFsEvents: false, usePolling: true } }
       : undefined,

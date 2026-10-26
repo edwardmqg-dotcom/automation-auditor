@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Isolated duplicate run ID regression</title>
+<body>
+<h1>Isolated duplicate run ID regression</h1>
+<p id="actor"></p><pre id="result">waiting</pre>
+<script type="module">
+  const params = new URLSearchParams(location.search);
+  const actor = params.get("actor") || "unknown";
+  const runId = params.get("scenario") === "patched" ? "RUN-HUMAN-TEST-02"
+    : params.get("scenario") === "patched-verified" ? "RUN-HUMAN-TEST-03"
+    : params.get("scenario") === "patched-final" ? "RUN-HUMAN-TEST-04"
+    : "RUN-HUMAN-TEST-01";
+  const store = params.get("control") === "legacy"
+    ? await import("./legacy-evidence-store.mjs")
+    : await import("./evidence-store.js");
+  document.querySelector("#actor").textContent = `Actor ${actor} · fixed run ID ${runId}`;
+  const record = { manifest: { run_id: runId }, label: actor };
+  try {
+    await store.saveEvidenceBundle(record);
+    document.querySelector("#result").textContent = `SAVE SUCCEEDED: ${actor}`;
+  } catch (error) {
+    document.querySelector("#result").textContent = `SAVE REFUSED: ${error.message}`;
+  }
+  async function refresh() {
+    try {
+      const records = await store.listEvidenceBundles();
+      const stored = records.find((item) => item.run_id === runId);
+      document.querySelector("#result").textContent += `\nCURRENT STORED LABEL: ${stored?.payload.label ?? "none"}`;
+    } catch (error) { document.querySelector("#result").textContent += `\nREAD ERROR: ${error.message}`; }
+  }
+  await refresh();
+  setInterval(refresh, 800);
+</script>
+</body>
+</html>

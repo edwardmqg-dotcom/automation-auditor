@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   ArrowRight,
@@ -68,6 +68,7 @@ import { readTaskInstructions } from "@/lib/task-instructions-view";
 import { canSubmitTaskResult, canSaveCompleteMeasurement, measurementReady, nextAvailableRunSequence, runAccessPrompt, runConsolePrompt, runWorkInstructions } from "@/lib/run-console-ui";
 import { inspectCompletionBundle } from "@/lib/completion-bundle-import.mjs";
 import { clearEvidenceBundles, listEvidenceBundles, saveEvidenceBundle } from "@/lib/evidence-store";
+import { getRunStartBlocker, isRunSetupLocked } from "@/lib/run-safety.mjs";
 import { hasMeasuredHumanTime } from "@/lib/timing-evidence.mjs";
 import { humanElapsedMs } from "@/lib/human-timing.mjs";
 import { inspectRunDraft, recoverInterruptedRun, RUN_DRAFT_KEY, RUN_DRAFT_VERSION } from "@/lib/run-draft.mjs";
@@ -222,7 +223,7 @@ type RunManifest = {
   review_as_of: string;
   input_refs: string[];
   rubric_ref: string;
-  auditor_build_id: "local-development-uncommitted";
+  auditor_build_id: string;
   event_schema: "event-schema.v0.4.json";
   connectivity_evidence_id: string;
   started_at: string;
@@ -311,7 +312,7 @@ export default function Home() {
   const [draftEventSource, setDraftEventSource] = useState<EventSource>("run_console");
   const [validatedDraftSignature, setValidatedDraftSignature] = useState<string | null>(null);
   const [mode, setMode] = useState<RunMode>("Human");
-  const [runState, setRunState] = useState<RunState>("ready");
+  const [runState, setRunStateState] = useState<RunState>("ready");
   const [humanActive, setHumanActive] = useState(false);
   const [activeSeconds, setActiveSeconds] = useState(0);
   const [events, setEvents] = useState<AuditEvent[]>([]);
@@ -328,8 +329,8 @@ export default function Home() {
   const [reviewError, setReviewError] = useState("");
   const [evidenceImportNotice, setEvidenceImportNotice] = useState("");
   const [completedRuns, setCompletedRuns] = useState<CompletedRun[]>([]);
-  const [evidenceStoreStatus, setEvidenceStoreStatus] = useState<"loading" | "ready" | "saving" | "error">("loading");
-  const [workspaceStoreStatus, setWorkspaceStoreStatus] = useState<"loading" | "ready" | "saving" | "error">("loading");
+  const [evidenceStoreStatus, setEvidenceStoreStatusState] = useState<"loading" | "ready" | "saving" | "error">("loading");
+  const [workspaceStoreStatus, setWorkspaceStoreStatusState] = useState<"loading" | "ready" | "saving" | "error">("loading");
   const [runPersistenceStatus, setRunPersistenceStatus] = useState<"loading" | "ready" | "error">("loading");
   const [runRecoveryNotice, setRunRecoveryNotice] = useState("");
   const [analystState, setAnalystState] = useState<"idle" | "loading" | "succeeded" | "unavailable" | "failed">("idle");
@@ -337,6 +338,8 @@ export default function Home() {
   const analystRequestRef = useRef<{ body: string; key: string } | null>(null);
   const modeRef = useRef(mode);
   const runStateRef = useRef(runState);
+  const evidenceStoreStatusRef = useRef(evidenceStoreStatus);
+  const workspaceStoreStatusRef = useRef(workspaceStoreStatus);
   const humanActiveRef = useRef(humanActive);
   const activeSecondsRef = useRef(activeSeconds);
   const humanStartedAtRef = useRef<string | null>(null);
@@ -349,6 +352,10 @@ export default function Home() {
   const workspaceSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sealingRef = useRef(false);
   const importSequenceRef = useRef(0);
+
+  const setRunState = useCallback((next: RunState) => { runStateRef.current = next; setRunStateState(next); }, []);
+  const setEvidenceStoreStatus = useCallback((next: "loading" | "ready" | "saving" | "error") => { evidenceStoreStatusRef.current = next; setEvidenceStoreStatusState(next); }, []);
+  const setWorkspaceStoreStatus = useCallback((next: "loading" | "ready" | "saving" | "error") => { workspaceStoreStatusRef.current = next; setWorkspaceStoreStatusState(next); }, []);
 
   function restoreSetupFields(draft: ConnectionDraft) {
     setDraftName(draft.name); setDraftTaskKind(draft.taskKind);
@@ -393,7 +400,7 @@ export default function Home() {
         if (active) setEvidenceStoreStatus("error");
       });
     return () => { active = false; };
-  }, []);
+  }, [setEvidenceStoreStatus]);
 
   useEffect(() => {
     let active = true;
@@ -502,7 +509,7 @@ export default function Home() {
         }
       });
     return () => { active = false; };
-  }, []);
+  }, [setRunState, setWorkspaceStoreStatus]);
 
   useEffect(() => {
     modeRef.current = mode;
@@ -582,7 +589,7 @@ export default function Home() {
   const contractChecks = useMemo(() => inspectToolSetupDraft(connectionDraft), [connectionDraft]);
   const currentDraftSignature = toolSetupSignature(connectionDraft);
   const contractValidated = validatedDraftSignature === currentDraftSignature && contractChecks.every((check) => check.passed);
-  const setupLocked = ["running", "submitted"].includes(runState) || workspaceStoreStatus !== "ready" || evidenceStoreStatus === "saving";
+  const setupLocked = isRunSetupLocked({ runState, workspaceStoreStatus, evidenceStoreStatus });
   const setupCurrent = !preparedSetup || toolSetupSignature(preparedSetup) === toolSetupSignature(connectionDraft);
   const workflowComparison = inspectWorkflowComparisons(preparedSetup ? [] : completedRuns, automation?.manifest.automation.automation_id, attachedBenchmark ?? undefined);
   const workflowState: WorkflowState = { loading: workspaceStoreStatus === "loading" || evidenceStoreStatus === "loading", storageError: workspaceStoreStatus === "error" || evidenceStoreStatus === "error" || runPersistenceStatus === "error", activeRun: ["running", "submitted"].includes(runState), prepared: Boolean(preparedSetup), setupDirty: Boolean(preparedSetup && !setupCurrent), connected: Boolean(automation), attached: Boolean(attachedBenchmark), comparable: workflowComparison.comparisons.length > 0, hasHuman: workflowComparison.latest.has("human_baseline") && !workflowComparison.incompleteLanes.includes("human_baseline"), needsRepeat: workflowComparison.incompleteLanes.length > 0, accessChecked: connectivityEvidence?.outcome === "verified" };
@@ -631,7 +638,7 @@ export default function Home() {
     });
   }
 
-  function startRun() {
+  async function startRun() {
     if (!attachedBenchmark) return;
     if (!completionCriteriaRef.trim()) {
       setReviewError("Specify the shared, versioned task completion criteria before starting.");
@@ -639,14 +646,11 @@ export default function Home() {
     }
     try { assertBenchmarkCompletionCriteria(attachedBenchmark, completionCriteriaRef); }
     catch (error) { setReviewError(error instanceof Error ? error.message : "Task criteria mismatch."); return; }
-    if (runPersistenceStatus !== "ready") {
-      setReviewError("Local run checkpoint is unavailable; starting would risk losing the timer again.");
-      return;
-    }
-    if (mode !== "Human" && connectivityEvidence?.outcome !== "verified") {
-      setReviewError("Automation runs require verified connectivity evidence. Human baseline remains available.");
-      return;
-    }
+    let storedIds: Set<string>;
+    try { storedIds = new Set((await listEvidenceBundles<CompletedRun>()).map((record) => record.payload.manifest.run_id)); }
+    catch { setReviewError("The local evidence store could not be checked. Reload the workspace before starting a run."); return; }
+    const blocker = getRunStartBlocker({ runPersistenceStatus, automationConnected: Boolean(automation), benchmarkAttached: Boolean(attachedBenchmark), criteria: completionCriteriaRef, criteriaMatches: true, connectivityVerified: mode === "Human" || connectivityEvidence?.outcome === "verified", runState: runStateRef.current, runIdStored: storedIds.has(runIdRef.current) });
+    if (blocker) { setReviewError(blocker); return; }
     setReviewError("");
     setRunSequence(availableRunSequence);
     setRunState("running");
@@ -777,7 +781,7 @@ export default function Home() {
         review_as_of: attachedBenchmark.review_as_of,
         input_refs: attachedBenchmark.input_files.map((file) => `sha256:${file.sha256}`),
         rubric_ref: benchmarkRubricRef(attachedBenchmark),
-        auditor_build_id: "local-development-uncommitted",
+        auditor_build_id: typeof __AUTOMATION_AUDITOR_BUILD_ID__ === "string" ? __AUTOMATION_AUDITOR_BUILD_ID__ : "local-development-uncommitted",
         event_schema: "event-schema.v0.4.json",
         connectivity_evidence_id: mode === "Human" ? "not-required-human-baseline" : connectivityEvidence?.evidence_id ?? "missing-connectivity-evidence",
         started_at: startedAt,
@@ -847,7 +851,7 @@ export default function Home() {
     try {
       const completed = inspectCompletionBundle(JSON.parse(await file.text())) as CompletedRun;
       if (completedRuns.some((run) => run.manifest.run_id === completed.manifest.run_id) || (["running", "submitted"].includes(runState) && completed.manifest.run_id === runId)) throw new Error("That run ID is already stored or active. Import will not overwrite it.");
-      await saveEvidenceBundle(completed, true);
+      await saveEvidenceBundle(completed);
       setCompletedRuns((current) => [...current, completed]);
       setAnalystState("idle"); setAnalystEnvelope(null);
       setEvidenceImportNotice(`Imported ${completed.manifest.run_id}; metrics recomputed from events. No timers or original records were changed.`);
@@ -934,7 +938,7 @@ export default function Home() {
     setValidatedDraftSignature(currentDraftSignature);
   }
 
-  async function persistWorkspace(connection: AutomationConnection, files: File[] = [], attached = false, completePreparedSetup = false) {
+  const persistWorkspace = useCallback(async (connection: AutomationConnection, files: File[] = [], attached = false, completePreparedSetup = false) => {
     setWorkspaceStoreStatus("saving");
     const saveOperation = workspaceSaveQueueRef.current
       .catch(() => undefined)
@@ -948,7 +952,7 @@ export default function Home() {
       setWorkspaceStoreStatus("error");
       return false;
     }
-  }
+  }, [setWorkspaceStoreStatus]);
 
   async function connectAutomation() {
     if (!contractValidated || setupLocked) return;
@@ -1168,6 +1172,7 @@ export default function Home() {
         const supplied = input as Partial<ConnectionDraft>;
         const draft = { ...supplied, versionB: supplied.versionB ?? "" } as ConnectionDraft;
         const checks = inspectConnectionDraft(draft);
+        if (isRunSetupLocked({ runState: runStateRef.current, workspaceStoreStatus: workspaceStoreStatusRef.current, evidenceStoreStatus: evidenceStoreStatusRef.current })) throw new Error("Automation setup is locked while a run or local save is active. Finish or pause the current workflow before changing the connection.");
         if (!checks.every((check) => check.passed)) throw new Error(`Connection contract is invalid: ${checks.filter((check) => !check.passed).map((check) => check.label).join(", ")}`);
         const manifest = buildConnectionManifest(draft);
         const connection: AutomationConnection = {
@@ -1218,18 +1223,19 @@ export default function Home() {
       description: "Start the currently selected Human, Version A, or Version B evaluation run and create its first visible event.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       annotations: { readOnlyHint: false, untrustedContentHint: false },
-      execute: () => {
-        if (runPersistenceStatus !== "ready") throw new Error("Local run checkpoint is unavailable.");
-        if (!automationRef.current) throw new Error("Connect an automation before starting a run.");
-        if (!attachedBenchmarkRef.current) throw new Error("Attach a validated benchmark before starting a run.");
-        if (!completionCriteriaRef.trim()) throw new Error("The user must provide shared task completion criteria before starting.");
-        assertBenchmarkCompletionCriteria(attachedBenchmarkRef.current, completionCriteriaRef);
-        if (modeRef.current !== "Human" && connectivityEvidenceRef.current?.outcome !== "verified") throw new Error("Verify automation connectivity before starting Version A or Version B.");
-        if (runStateRef.current !== "ready") throw new Error("The selected run is not ready to start.");
+      execute: async () => {
+        const selectedAutomation = automationRef.current;
+        const selectedBenchmark = attachedBenchmarkRef.current;
+        const criteriaMatches = Boolean(selectedBenchmark && completionCriteriaRef.trim());
+        if (criteriaMatches) assertBenchmarkCompletionCriteria(selectedBenchmark!, completionCriteriaRef);
+        const stored = await listEvidenceBundles<CompletedRun>();
+        const blocker = getRunStartBlocker({ runPersistenceStatus, automationConnected: Boolean(selectedAutomation), benchmarkAttached: Boolean(selectedBenchmark), criteria: completionCriteriaRef, criteriaMatches, connectivityVerified: modeRef.current === "Human" || connectivityEvidenceRef.current?.outcome === "verified", runState: runStateRef.current, runIdStored: stored.some((record) => record.payload.manifest.run_id === currentRunId()) });
+        if (blocker) throw new Error(blocker);
+        if (!selectedAutomation || !selectedBenchmark) throw new Error("Automation or benchmark state changed while checking this run. Reload before continuing.");
         runStateRef.current = "running";
         setRunState("running");
-        pushEvent("task_loaded", "Task loaded", `Verified benchmark ${attachedBenchmarkRef.current.task_id} attached to this run`);
-        pushEvent("run_started", "Run started", `${modeRef.current} · ${modeRef.current === "Human" ? "manual baseline" : adapterLabels[automationRef.current.adapter]}`, "system", undefined, "", { completion_criteria_ref: completionCriteriaRef.trim() });
+        pushEvent("task_loaded", "Task loaded", `Verified benchmark ${selectedBenchmark.task_id} attached to this run`);
+        pushEvent("run_started", "Run started", `${modeRef.current} · ${modeRef.current === "Human" ? "manual baseline" : adapterLabels[selectedAutomation.adapter]}`, "system", undefined, "", { completion_criteria_ref: completionCriteriaRef.trim() });
         return { runId: currentRunId(), status: "running", mode: modeRef.current };
       },
     });
@@ -1287,7 +1293,7 @@ export default function Home() {
     });
 
     return () => lifecycle.abort();
-  }, [runPersistenceStatus, completionCriteriaRef]);
+  }, [runPersistenceStatus, completionCriteriaRef, persistWorkspace, setRunState]);
 
   return (
     <main className="app-shell">

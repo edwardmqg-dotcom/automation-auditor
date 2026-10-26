@@ -19,17 +19,25 @@ function openDatabase(): Promise<IDBDatabase> {
   });
 }
 
-export async function saveEvidenceBundle<T extends { manifest: { run_id: string } }>(payload: T, preventOverwrite = false) {
+export async function saveEvidenceBundle<T extends { manifest: { run_id: string } }>(payload: T) {
   const database = await openDatabase();
   try {
     await new Promise<void>((resolve, reject) => {
       const transaction = database.transaction(STORE_NAME, "readwrite");
       const record = { run_id: payload.manifest.run_id, saved_at: new Date().toISOString(), payload } satisfies StoredEvidenceBundle<T>;
-      if (preventOverwrite) transaction.objectStore(STORE_NAME).add(record);
-      else transaction.objectStore(STORE_NAME).put(record);
+      // Run IDs are immutable evidence keys. `put` silently replaces a record
+      // when another tab calculated the same next ID from a stale snapshot.
+      let duplicateRunId = false;
+      const request = transaction.objectStore(STORE_NAME).add(record);
+      request.onerror = () => {
+        duplicateRunId = request.error?.name === "ConstraintError";
+      };
+      const saveError = (fallback: string) => duplicateRunId
+        ? new Error(`Run ${payload.manifest.run_id} is already stored. The existing evidence was left unchanged. Reload the workspace before continuing.`)
+        : transaction.error ?? new Error(fallback);
       transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error ?? new Error("Could not save the evidence bundle."));
-      transaction.onabort = () => reject(transaction.error ?? new Error("The evidence save was aborted."));
+      transaction.onerror = () => reject(saveError("Could not save the evidence bundle."));
+      transaction.onabort = () => reject(saveError("The evidence save was aborted."));
     });
   } finally {
     database.close();
